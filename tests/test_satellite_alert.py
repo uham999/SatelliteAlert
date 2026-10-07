@@ -198,7 +198,7 @@ class MonitorTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="satellite-alert-tests-")
         self.root = Path(self.temp.name)
         self.now = GeometryTests.now
-        settings = {**DEFAULT_SETTINGS, "satellites": ["ISS"], "alert_mode": "threshold", "sound_enabled": False, "windows_popup": False}
+        settings = {**DEFAULT_SETTINGS, "satellites": ["ISS"], "alert_mode": "threshold", "sound_enabled": False, "windows_popup": False, "automatic_pause_enabled": False}
         atomic_json(self.root / "settings.json", settings)
         self.monitor = Monitor(self.root, clock=lambda: self.now, fetcher=lambda: FIXTURE)
 

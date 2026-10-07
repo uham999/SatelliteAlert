@@ -29,6 +29,7 @@ from orbits import (
 
 ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger("satellite_alert")
+PAUSE_SETTINGS = {"automatic_pause_enabled", "automatic_pause_start", "automatic_pause_hours"}
 
 
 def atomic_json(path: Path, value):
@@ -84,8 +85,9 @@ class SoundPlayer:
 
 
 class Monitor:
-    def __init__(self, root: Path = ROOT, clock=utc_now, fetcher=download_elements):
+    def __init__(self, root: Path = ROOT, clock=utc_now, fetcher=download_elements, local_timezone=None):
         self.root, self.clock, self.fetcher = root, clock, fetcher
+        self.local_timezone = local_timezone  # None uses the computer's local time zone.
         self.data = root / "data"
         self.data.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
@@ -114,6 +116,18 @@ class Monitor:
         self.sound_serial = 0
         self.threads = []
         self.paused = False
+        self.manual_paused = False
+        self.resume_override_window = None
+        try:
+            control = read_json(self.data / "pause.json", {})
+            manual, override = control.get("manual_paused", False), control.get("resume_override_window")
+            if not isinstance(manual, bool) or (override is not None and (not isinstance(override, str) or datetime.strptime(override, "%Y-%m-%d").date().isoformat() != override)):
+                raise ValueError("Invalid saved pause control.")
+            self.manual_paused, self.resume_override_window = manual, override
+        except (ValueError, TypeError, AttributeError, OSError):
+            LOG.exception("Pause control could not be read")
+            self.warnings.append("Saved pause control could not be read; the daily schedule applies.")
+        self._update_pause(self.clock())
         self.alerts = []
         self.ledger = []
         try:
@@ -195,9 +209,14 @@ class Monitor:
             if "latitude" in values or "longitude" in values:
                 combined["location_note"] = ""
             settings = validate_settings(combined)
-            recalculate = any(settings[key] != self.settings[key] for key in settings if key != "earth_overlay")
+            recalculate = any(settings[key] != self.settings[key] for key in settings if key not in PAUSE_SETTINGS | {"earth_overlay"})
+            pause_changed = any(settings[key] != self.settings[key] for key in PAUSE_SETTINGS)
             atomic_json(self.root / "settings.json", settings)
             self.settings = settings
+            if pause_changed:
+                self.resume_override_window = None
+                self._persist_pause()
+            self._update_pause(self.clock())
             if recalculate:
                 self.generation += 1
                 # Stop using old-location or old-threshold windows immediately.
@@ -226,7 +245,39 @@ class Monitor:
         if not isinstance(paused, bool):
             raise ValueError("Pause must be true or false.")
         with self.lock:
-            self.paused = paused
+            self.manual_paused = paused
+            self.resume_override_window = self._pause_window(self.clock()) if not paused else None
+            self._persist_pause()
+            self._update_pause(self.clock())
+
+    def _pause_window(self, now):
+        """Identify today's quiet period using local wall time, including DST.
+
+        A period crossing midnight belongs to the date on which it started.
+        Returning the start date lets Resume override only that daily period.
+        """
+        if not self.settings["automatic_pause_enabled"]:
+            return None
+        local = now.astimezone(self.local_timezone)
+        hour, minute = map(int, self.settings["automatic_pause_start"].split(":"))
+        start = hour * 3600 + minute * 60
+        current = local.hour * 3600 + local.minute * 60 + local.second + local.microsecond / 1_000_000
+        if (current - start) % 86400 >= self.settings["automatic_pause_hours"] * 3600:
+            return None
+        date = local.date() - timedelta(days=int(current < start))
+        return date.isoformat()
+
+    def _update_pause(self, now):
+        window = self._pause_window(now)
+        if self.resume_override_window != window:
+            self.resume_override_window = None
+        self.automatic_pause_active = window is not None
+        self.automatic_pause_overridden = window is not None and self.resume_override_window == window
+        self.paused = self.manual_paused or (self.automatic_pause_active and not self.automatic_pause_overridden)
+        self.pause_reason = "manual" if self.manual_paused else "automatic" if self.paused else None
+
+    def _persist_pause(self):
+        atomic_json(self.data / "pause.json", dict(manual_paused=self.manual_paused, resume_override_window=self.resume_override_window))
 
     def _refresh_once(self):
         with self.lock:
@@ -315,6 +366,7 @@ class Monitor:
         with self.lock:
             now = self.clock()
             self.last_tick = now
+            self._update_pause(now)
             rows = {row["name"]: row for row in self.satellite_status}
             ready = set()
             for name, satellite, observer in self.models:
@@ -407,10 +459,15 @@ class Monitor:
     def snapshot(self):
         with self.lock:
             now = self.clock()
+            self._update_pause(now)
             windows = [pass_.to_json(self.settings["alert_mode"]) for pass_ in self.passes if pass_.threshold_set > now]
+            pending = [pass_.to_json(self.settings["alert_mode"]) for pass_ in self.passes
+                       if pass_.threshold_set > now and not already_alerted(pass_, self.ledger)]
+            pending.sort(key=lambda pass_: pass_["alert_at"])
             rows = deepcopy(self.satellite_status)
             for row in rows:
-                row["next_pass"] = next((pass_ for pass_ in windows if pass_["name"] == row["name"]), None)
+                row["next_pass"] = next((pass_ for pass_ in pending if pass_["name"] == row["name"]), None)
+            rows.sort(key=lambda row: (row["next_pass"] is None, row["next_pass"]["alert_at"] if row["next_pass"] else ""))
             alerts = deepcopy(self.alerts)
             for alert in alerts:
                 alert["active"] = not alert["acknowledged"] and datetime.fromisoformat(alert["expires_at"]) > now
@@ -419,6 +476,8 @@ class Monitor:
                         forecast_at=iso(self.forecast_at), last_tick=iso(self.last_tick),
                         updating=self.updating, fetch_error=self.fetch_error, forecast_error=self.forecast_error,
                         warnings=list(self.warnings), paused=self.paused, sound_serial=self.sound_serial,
+                        pause_reason=self.pause_reason, automatic_pause_active=self.automatic_pause_active,
+                        automatic_pause_overridden=self.automatic_pause_overridden,
                         native_sound=self.sound.windows, sound_status=self.sound.status, source=TLE_URL)
 
     def filtered_elements(self):

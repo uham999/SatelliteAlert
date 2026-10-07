@@ -20,5 +20,8 @@
   "sound_enabled": true,
   "repeat_sound_seconds": 30,
   "windows_popup": true,
+  "automatic_pause_enabled": true,
+  "automatic_pause_start": "00:00",
+  "automatic_pause_hours": 7.0,
   "location_note": ""
 }

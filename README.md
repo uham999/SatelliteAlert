@@ -13,6 +13,8 @@ Choose an alert at the minimum angle, at horizon rise, or **5, 10 or 20 minutes
 before rise**. The default is **5 minutes before horizon rise**. The Earth
 background is shown by default and can be switched off in the live view.
 All application text is at least **18px**, with larger headings and values.
+The watch list puts the next predicted alert first. A daily automatic pause is
+enabled by default from **midnight to 7am**, using your computer's local time.
 
 The default ground station and satellite list are:
 
@@ -20,6 +22,7 @@ The default ground station and satellite list are:
 - Longitude **0.375° W** (`-0.375`).
 - Minimum elevation **35° above your local horizon**.
 - Alert **5 minutes before horizon rise**, only for passes reaching that angle.
+- Automatic pause **00:00 for 7 hours**, every day.
 - RS-44, AO-73, SO-50, ISS, FO-29, JO-97 and AO-123.
 - Observer height defaults to **0 metres above sea level**; set your station's
   actual height in Settings. Existing saved preferences are retained.
@@ -144,6 +147,46 @@ deduplication survive restart. Small time changes after a TLE refresh do not
 produce a second alert for the same pass. Pausing stops real alerts and repeat
 sound; resuming catches a currently qualifying pass.
 
+## Daily automatic pause and manual control
+
+In **Settings → Automatic pause**, choose whether to enable the daily pause,
+its **start time**, and the **number of hours to pause**. The default is enabled:
+start at **00:00**, pause for **7 hours**, and resume at **07:00**. A start of
+22:30 with 8 hours resumes at 06:30 the next day. Fractional durations are allowed
+from 0.25 to 24 hours. With 24 hours selected, each daily pause lasts until the
+next start time.
+
+The schedule follows the **computer running Python's local clock**, even if you
+choose UTC for the pass table. It uses local clock hours, so midnight to 7am still
+ends at 7am when daylight-saving changes the clock. Positions, forecasts and
+orbital downloads continue during both automatic and manual pauses. Real alert
+banners, notifications, new alerts and repeat chimes are suppressed; an explicit
+**Test alert** remains available. An already open Windows popup is not closed.
+
+Whenever either kind of pause applies, the dashboard displays:
+**“Alerts are paused. Positions and orbital data continue to update.”**
+
+- **Resume alerts** during an automatic pause overrides that period. Alerts stay
+  active until the **next daily pause starts**, unless you manually pause again.
+- **Pause alerts** applies a manual pause until you press **Resume alerts**, even
+  after the automatic pause period ends. Manual Resume also overrides any
+  automatic period currently in progress.
+- Manual pause and the current Resume override survive an app restart. Changing
+  the automatic pause schedule clears its Resume override and applies the new
+  schedule immediately. It preserves an existing manual pause.
+- Resuming catches an unalerted pass whose useful alert window is still open.
+  Completed passes do not produce delayed alerts; acknowledged passes stay silent.
+
+The watch list sorts by each satellite's **next unalerted qualifying pass**, with
+the earliest predicted alert first. Satellites without one in the forecast go
+last. Equal alert times retain the configured satellite order. Pausing does not
+change predicted times or the order.
+
+Pause controls apply immediately when saved, without recalculating or
+acknowledging an existing pass alert.
+
+![Automatic pause enabled from midnight for seven hours](docs/automatic-pause.jpg)
+
 ## Automatic downloads and continuous operation
 
 On **every program start**, the app immediately checks both the saved download
@@ -198,6 +241,7 @@ Stop with **How it works → Stop app**, or Ctrl+C in the program's terminal.
   from Git, as are caches, alert history and virtual environments.
 - `data/elements.json`: downloaded TLE text and successful download timestamp.
 - `data/alerts.json`: recent alert history and deduplication records.
+- `data/pause.json`: manual pause and the current automatic-pause Resume override.
 - `data/satellite_alert.log`: rotating diagnostic log; retained locally.
 - `tests/`: repeatable offline checks, including actual 35° crossing calculations.
 

@@ -99,3 +99,30 @@ used as the program's live orbital data.
   Switching Earth off, saving Settings, and switching it back on demonstrated
   that the sole live control persists correctly. The relocated Refresh button
   successfully downloaded AMSAT data and retained all seven watched satellites.
+
+## Daily automatic pause and next-alert watch order
+
+- **68 offline tests passed on Python 3.12.14 and Python 3.14.8**. New checks
+  cover exact daily start/end boundaries, fractional durations, crossing midnight,
+  24-hour pauses, local clock offsets, a modelled daylight-saving clock jump,
+  default migration, invalid settings, restart persistence and corrupt state recovery.
+- Manual Resume overrides the current automatic period and the next day's pause
+  still applies. Manual Pause persists beyond the scheduled end until Resume.
+  Changing schedule settings clears the override without rebuilding predictions
+  or acknowledging active alerts. The local HTTP API was exercised end to end.
+- Real Skyfield positions and downloads continue while paused. Controlled ticks
+  confirm no new alerts, ledger entries, sound calls or popup requests during
+  the pause, and an eligible pass alerts when manually resumed. Repeat sound
+  stops on manual pause. These checks do not establish physical speaker playback
+  or operating-system popup behavior on another computer.
+- Watch-list checks cover earliest pending alert order, equal-time stability,
+  missing/no-pass rows last, completed passes and skipping already alerted passes.
+- In the running Codex dashboard, a temporary 24-hour setting triggered an
+  automatic pause and displayed the requested message. Resume overrode it.
+  The default enabled 00:00 / 7-hour schedule was restored through Settings;
+  manual Pause displayed the same message and Resume removed it.
+- The live watch list was confirmed in predicted alert order, with FO-29 first.
+  New controls retain the 18px minimum and the preview has no horizontal overflow.
+  The screenshot in docs/automatic-pause.jpg shows the restored defaults.
+  Coordinates, 100-metre station height, satellite list, 5-minute timing and Earth
+  overlay were retained. The monitor is running with manual pause disabled.

@@ -132,7 +132,7 @@ function renderTable() {
 }
 
 function renderAlerts() {
-  const active=state.alerts.filter(alert=>alert.active);
+  const active=state.alerts.filter(alert=>alert.active && (!state.paused || alert.test));
   $('alertBanner').classList.toggle('hidden',!active.length);
   if (active.length) {
     const tests=active.every(alert=>alert.test);
@@ -149,7 +149,7 @@ function renderAlerts() {
       }
     }
   }
-  if(soundSerial!==null && state.sound_serial!==soundSerial && browserSound && state.settings.sound_enabled && (!state.native_sound || state.sound_status.includes('failed'))) chime();
+  if(soundSerial!==null && state.sound_serial!==soundSerial && (!state.paused || active.some(alert=>alert.test)) && browserSound && state.settings.sound_enabled && (!state.native_sound || state.sound_status.includes('failed'))) chime();
   soundSerial=state.sound_serial;
   $('history').innerHTML=state.alerts.length ? state.alerts.map(alert=>`<div class="history-item"><div><strong>${esc(alert.test?'TEST ALERT':alert.name)}</strong> <span class="tag">${alert.acknowledged?'ACKNOWLEDGED':alert.active?'ACTIVE':'ENDED'}</span><p>${esc(alert.message)}</p></div><time>${formatTime(alert.created_at,true,true)}</time></div>`).join('') : '<p class="empty">No alerts yet. Use Test alert to check the banner and chime.</p>';
 }
@@ -164,6 +164,8 @@ function renderStatus() {
   if(state.warnings.length) warnings.push(`${state.warnings.length} malformed or invalid feed record(s) were skipped. See the orbital data log for details.`);
   $('notice').textContent=warnings.join(' ');$('notice').classList.toggle('hidden',!warnings.length);
   $('pause').textContent=state.paused?'Resume alerts':'Pause alerts';
+  $('pause').title=state.pause_reason==='automatic'?'Resume overrides this automatic pause period':state.paused?'Resume alerts':'Pause until you press Resume';
+  $('quietStatus').textContent=state.pause_reason==='manual'?'Currently paused manually. Press Resume alerts to continue.':state.pause_reason==='automatic'?'Currently in the automatic pause period. Resume alerts overrides this period.':state.automatic_pause_overridden?'Manual Resume is overriding the current automatic pause period.':state.settings.automatic_pause_enabled?'The daily pause follows this computer’s local clock.':'Automatic pause is disabled.';
   $('refresh').disabled=state.updating;$('refresh').textContent=state.updating?'↻ Downloading…':'↻ Refresh orbital data';
   const ticking=state.last_tick && Date.now()-new Date(state.last_tick)<10000;
   $('connection').classList.toggle('offline',state.paused || !ticking);
@@ -258,7 +260,7 @@ $('settingsForm').addEventListener('submit',async event=>{
     const field=form.elements.namedItem(key);if(!field)continue;
     data[key]=field.type==='checkbox'?field.checked:key==='satellites'?field.value.split(/[\n,]+/).map(name=>name.trim()).filter(Boolean):field.type==='number'?Number(field.value):field.value;
   }
-  const recalculate=Object.keys(data).some(key=>key!=='earth_overlay' && JSON.stringify(data[key])!==JSON.stringify(state.settings[key]));
+  const recalculate=Object.keys(data).some(key=>!['earth_overlay','automatic_pause_enabled','automatic_pause_start','automatic_pause_hours'].includes(key) && JSON.stringify(data[key])!==JSON.stringify(state.settings[key]));
   try{await post('/api/settings',data);if(recalculate){selectedPass=null;selectedName=null;}$('saveStatus').textContent=recalculate?'Saved. Recalculating your passes…':'Settings saved.';toast('Settings saved.');}catch(error){$('saveStatus').textContent=error.message;toast(error.message);}
 });
 $('enableNotifications').addEventListener('click',async()=>{

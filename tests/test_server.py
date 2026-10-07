@@ -19,10 +19,10 @@ class DashboardServerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="satellite-http-tests-")
         self.root = Path(self.temp.name)
         shutil.copytree(ROOT / "static", self.root / "static")
-        settings = {**DEFAULT_SETTINGS, "satellites": ["ISS"], "sound_enabled": False, "windows_popup": False}
+        settings = {**DEFAULT_SETTINGS, "satellites": ["ISS"], "sound_enabled": False, "windows_popup": False, "automatic_pause_enabled": False}
         atomic_json(self.root / "settings.json", settings)
-        now = datetime(2026, 10, 7, tzinfo=timezone.utc)
-        self.monitor = Monitor(self.root, clock=lambda: now, fetcher=lambda: FIXTURE)
+        self.now = datetime(2026, 10, 7, tzinfo=timezone.utc)
+        self.monitor = Monitor(self.root, clock=lambda: self.now, fetcher=lambda: FIXTURE, local_timezone=timezone.utc)
         self.monitor._refresh_once()
         self.monitor._rebuild()
         self.monitor.tick()
@@ -61,6 +61,20 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(value["satellites"][0]["name"], "ISS")
         self.assertTrue(value["passes"])
         self.assertEqual(value["settings"]["minimum_elevation"], 35)
+
+    def test_automatic_pause_settings_and_manual_resume_via_http(self):
+        generation = self.monitor.generation
+        self.assertEqual(self.request("POST", "/api/settings", {"automatic_pause_enabled": True, "automatic_pause_start": "00:00", "automatic_pause_hours": 7})[0], 200)
+        _, body, _ = self.request("GET", "/api/state")
+        self.assertTrue(json.loads(body)["paused"])
+        self.assertEqual(json.loads(body)["pause_reason"], "automatic")
+        self.assertEqual(self.monitor.generation, generation)
+        self.assertEqual(self.request("POST", "/api/pause", {"paused": False})[0], 200)
+        _, body, _ = self.request("GET", "/api/state")
+        self.assertFalse(json.loads(body)["paused"])
+        self.assertTrue(json.loads(body)["automatic_pause_overridden"])
+        self.assertEqual(self.request("POST", "/api/settings", {"automatic_pause_start": "25:00"})[0], 400)
+        self.assertEqual(self.monitor.settings["automatic_pause_start"], "00:00")
 
     def test_earth_image_served_locally_and_early_timing_saved(self):
         status, body, headers = self.request("GET", "/earth-overlay.png")

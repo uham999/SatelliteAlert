@@ -34,6 +34,9 @@ DEFAULT_SETTINGS = {
     "sound_enabled": True,
     "repeat_sound_seconds": 30,
     "windows_popup": True,
+    "automatic_pause_enabled": True,
+    "automatic_pause_start": "00:00",
+    "automatic_pause_hours": 7.0,
     "location_note": "",
 }
 
@@ -57,6 +60,7 @@ def validate_settings(values: dict) -> dict:
         "observer_height_m": (-500, 10000), "minimum_elevation": (0, 89.9),
         "refresh_hours": (1, 168), "forecast_hours": (6, 168),
         "maximum_tle_age_days": (1, 14), "repeat_sound_seconds": (10, 600),
+        "automatic_pause_hours": (0.25, 24),
     }
     for key, (lower, upper) in bounds.items():
         try:
@@ -66,9 +70,11 @@ def validate_settings(values: dict) -> dict:
         if isinstance(result[key], bool) or not math.isfinite(value) or not lower <= value <= upper:
             raise ValueError(f"{key.replace('_', ' ')} must be between {lower} and {upper}.")
         result[key] = value
-    for key in ("sound_enabled", "windows_popup", "earth_overlay"):
+    for key in ("sound_enabled", "windows_popup", "earth_overlay", "automatic_pause_enabled"):
         if not isinstance(result[key], bool):
             raise ValueError(f"{key} must be true or false.")
+    if not isinstance(result["automatic_pause_start"], str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", result["automatic_pause_start"]):
+        raise ValueError("Automatic pause start must be a time in HH:MM format, from 00:00 to 23:59.")
     if result["alert_mode"] not in ("threshold", "horizon", *EARLY_ALERT_MINUTES):
         raise ValueError("Choose threshold, horizon, or 5, 10 or 20 minutes before horizon rise.")
     names = result["satellites"]
