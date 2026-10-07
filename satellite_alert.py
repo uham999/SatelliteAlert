@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 import webbrowser
 
 from orbits import (
-    DEFAULT_SETTINGS, TLE_URL, OrbitCalculator, already_alerted, alert_due, alert_time,
+    DEFAULT_SETTINGS, EARLY_ALERT_MINUTES, TLE_URL, OrbitCalculator, already_alerted, alert_due, alert_time,
     iso, parse_tles, resolve_name, utc_now, validate_settings,
 )
 
@@ -148,10 +148,31 @@ class Monitor:
             LOG.exception("Invalid cached elements")
 
     def start(self):
+        # Check once per program start. A provider can return unchanged old
+        # epochs; keep normal refresh/retry intervals instead of looping downloads.
+        with self.lock:
+            self.manual_refresh = self.manual_refresh or self._startup_refresh_required()
         for name, function in (("orbital-data", self._maintenance), ("pass-monitor", self._monitor)):
             thread = threading.Thread(target=function, name=name, daemon=True)
             self.threads.append(thread)
             thread.start()
+
+    def _startup_refresh_required(self):
+        now = self.clock()
+        if not self.records or self.fetched_at is None or now - self.fetched_at >= timedelta(days=1):
+            return True
+        for name in self.settings["satellites"]:
+            record = resolve_name(name, self.records)
+            if record is None:
+                return True
+            try:
+                epoch = self.calculator.satellite(record).epoch.utc_datetime()
+                if now - epoch > timedelta(days=1):
+                    return True
+            except Exception:
+                LOG.exception("Unable to check cached element age for %s", name)
+                return True
+        return False
 
     def close(self):
         self.stop.set()
@@ -337,7 +358,7 @@ class Monitor:
     def _make_alert(self, name, test, now, end, elevation, peak, horizon_rise=None):
         if test:
             message = "TEST ALERT — this is a demonstration, not a real pass."
-        elif self.settings["alert_mode"] == "before_horizon":
+        elif self.settings["alert_mode"] in EARLY_ALERT_MINUTES:
             rise_time = horizon_rise.strftime("%H:%M:%S UTC")
             message = f"{name}: qualifying pass, horizon rise at {rise_time}; predicted peak {peak:.1f}°."
         elif self.settings["alert_mode"] == "horizon":

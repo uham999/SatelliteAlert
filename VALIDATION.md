@@ -70,3 +70,32 @@ used as the program's live orbital data.
   and Start.bat both launched the application's --help command successfully.
 - The running Codex preview continues to use Python 3.12.14. The Python 3.14
   verification covers orbital calculations, alert logic and local HTTP handling.
+
+## Readability, startup freshness and additional warning times
+
+- **49 tests passed on both Python 3.12.14 and Python 3.14.8** after these changes.
+  New checks cover 5- and 20-minute warning boundaries, midnight transitions,
+  alarms while below the horizon, qualifying peaks and restart deduplication.
+- Real maintenance threads were exercised with controlled data: startup downloads
+  missing data, refreshes a 24-hour-old download despite a longer saved interval,
+  refreshes a recent download whose watched elements are older than 1 day, and
+  refreshes when a watched satellite is missing. Fresh cache avoids a download.
+  Offline startup preserves the good cache and the 5-minute retry backoff.
+- New installations default to the 5-minute warning and an enabled Earth image.
+  The running preview was set to these requested choices while retaining the
+  user's coordinates, observer height of 100 metres and satellite list.
+- Typography now has an 18px minimum, including responsive labels, buttons,
+  menus, links, table text and canvas labels. Larger headings and values were
+  increased in proportion. The sky plot uses a square aspect ratio to enlarge
+  the Earth circle across the available panel width.
+- The duplicate Earth checkbox was removed from Settings. The live Earth
+  toggle remains the sole control and saves its choice. Refresh orbital data
+  was moved next to Test alert at the top of the live page.
+- Browser checks found no rendered text below 18px in the live view, Settings,
+  alert history or help. At the 592px preview width the sky canvas is 477px
+  square, versus its former 268px height; the page has no horizontal overflow.
+  The 20-minute warning was saved through Settings and its actual alert time
+  was confirmed 20 minutes before rise. The 5-minute choice was restored.
+  Switching Earth off, saving Settings, and switching it back on demonstrated
+  that the sole live control persists correctly. The relocated Refresh button
+  successfully downloaded AMSAT data and retained all seven watched satellites.

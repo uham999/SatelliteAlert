@@ -11,6 +11,7 @@ from skyfield.api import EarthSatellite, load, wgs84
 
 UTC = timezone.utc
 TLE_URL = "https://www.amsat.org/tle/current/nasabare.txt"
+EARLY_ALERT_MINUTES = {"before_horizon_5": 5, "before_horizon": 10, "before_horizon_20": 20}
 # NORAD catalogue numbers keep identity stable if the feed renames a satellite.
 # AO-97 deliberately has no guessed replacement.
 CATALOGUE = {
@@ -28,7 +29,7 @@ DEFAULT_SETTINGS = {
     "refresh_hours": 24.0,
     "forecast_hours": 48,
     "maximum_tle_age_days": 7.0,
-    "alert_mode": "threshold",
+    "alert_mode": "before_horizon_5",
     "earth_overlay": True,
     "sound_enabled": True,
     "repeat_sound_seconds": 30,
@@ -68,8 +69,8 @@ def validate_settings(values: dict) -> dict:
     for key in ("sound_enabled", "windows_popup", "earth_overlay"):
         if not isinstance(result[key], bool):
             raise ValueError(f"{key} must be true or false.")
-    if result["alert_mode"] not in ("threshold", "horizon", "before_horizon"):
-        raise ValueError("Choose threshold, horizon, or 10 minutes before horizon rise.")
+    if result["alert_mode"] not in ("threshold", "horizon", *EARLY_ALERT_MINUTES):
+        raise ValueError("Choose threshold, horizon, or 5, 10 or 20 minutes before horizon rise.")
     names = result["satellites"]
     if not isinstance(names, list) or not 1 <= len(names) <= 30:
         raise ValueError("Choose between 1 and 30 satellites.")
@@ -238,8 +239,8 @@ class OrbitCalculator:
 
 
 def alert_time(pass_: Pass, mode: str) -> datetime:
-    if mode == "before_horizon":
-        return pass_.horizon_rise - timedelta(minutes=10)
+    if mode in EARLY_ALERT_MINUTES:
+        return pass_.horizon_rise - timedelta(minutes=EARLY_ALERT_MINUTES[mode])
     return pass_.horizon_rise if mode == "horizon" else pass_.threshold_rise
 
 

@@ -15,7 +15,7 @@
   "refresh_hours": 24.0,
   "forecast_hours": 48,
   "maximum_tle_age_days": 7.0,
-  "alert_mode": "threshold",
+  "alert_mode": "before_horizon_5",
   "earth_overlay": true,
   "sound_enabled": true,
   "repeat_sound_seconds": 30,

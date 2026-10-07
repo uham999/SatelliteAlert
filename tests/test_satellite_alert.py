@@ -4,6 +4,7 @@ from datetime import timedelta
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -42,6 +43,14 @@ class SettingsAndElementsTests(unittest.TestCase):
         self.assertTrue(validate_settings({})["earth_overlay"])
         with self.assertRaises(ValueError):
             validate_settings({"earth_overlay": "false"})
+
+    def test_five_minute_default_and_all_warning_choices(self):
+        self.assertEqual(validate_settings({})["alert_mode"], "before_horizon_5")
+        for mode in ("before_horizon_5", "before_horizon", "before_horizon_20"):
+            with self.subTest(mode=mode):
+                self.assertEqual(validate_settings({"alert_mode": mode})["alert_mode"], mode)
+        with self.assertRaises(ValueError):
+            validate_settings({"alert_mode": "before_horizon_15"})
 
     def test_valid_elements_and_identity(self):
         self.assertEqual(len(RECORDS), 1)
@@ -142,6 +151,18 @@ class GeometryTests(unittest.TestCase):
         self.assertTrue(alert_due(pass_, "before_horizon", early + timedelta(minutes=5)))
         self.assertFalse(alert_due(pass_, "before_horizon", pass_.threshold_set))
 
+    def test_five_and_twenty_minute_boundaries_and_midnight(self):
+        for mode, minutes in (("before_horizon_5", 5), ("before_horizon_20", 20)):
+            with self.subTest(mode=mode):
+                pass_ = replace(self.passes[0], horizon_rise=self.now.replace(hour=0, minute=2, second=0, microsecond=0))
+                early = pass_.horizon_rise - timedelta(minutes=minutes)
+                self.assertEqual(alert_time(pass_, mode), early)
+                self.assertEqual(pass_.to_json(mode)["alert_at"], iso(early))
+                self.assertEqual(early.date(), (pass_.horizon_rise - timedelta(days=1)).date())
+                self.assertFalse(alert_due(pass_, mode, early - timedelta(seconds=1)))
+                self.assertTrue(alert_due(pass_, mode, early))
+                self.assertFalse(alert_due(pass_, mode, pass_.threshold_set))
+
     def test_early_time_crosses_midnight_correctly(self):
         rise = self.now.replace(hour=0, minute=5, second=0, microsecond=0)
         pass_ = replace(self.passes[0], horizon_rise=rise)
@@ -177,7 +198,7 @@ class MonitorTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="satellite-alert-tests-")
         self.root = Path(self.temp.name)
         self.now = GeometryTests.now
-        settings = {**DEFAULT_SETTINGS, "satellites": ["ISS"], "sound_enabled": False, "windows_popup": False}
+        settings = {**DEFAULT_SETTINGS, "satellites": ["ISS"], "alert_mode": "threshold", "sound_enabled": False, "windows_popup": False}
         atomic_json(self.root / "settings.json", settings)
         self.monitor = Monitor(self.root, clock=lambda: self.now, fetcher=lambda: FIXTURE)
 
@@ -196,6 +217,86 @@ class MonitorTests(unittest.TestCase):
         loaded = Monitor(self.root, clock=lambda: self.now, fetcher=lambda: self.fail("Cache should not trigger download"))
         self.assertEqual(loaded.fetched_at, self.now)
         self.assertEqual(loaded.next_refresh(), self.now + timedelta(hours=24))
+
+    def start_until_downloaded(self, monitor):
+        refreshed = threading.Event()
+        refresh_once = monitor._refresh_once
+        def record_refresh():
+            try:
+                refresh_once()
+            finally:
+                refreshed.set()
+        monitor._refresh_once = record_refresh
+        monitor.start()
+        try:
+            self.assertTrue(refreshed.wait(3), "Startup must refresh without waiting for the daily interval")
+        finally:
+            monitor.close()
+        self.assertIsNone(monitor.fetch_error)
+        self.assertEqual(monitor.fetched_at, self.now)
+
+    def test_startup_downloads_when_no_cache_exists(self):
+        self.start_until_downloaded(self.monitor)
+        self.assertIn(25544, self.monitor.records)
+
+    def test_startup_refreshes_old_download_despite_longer_schedule(self):
+        self.monitor._refresh_once()
+        self.now += timedelta(hours=24)
+        self.monitor.settings["refresh_hours"] = 72
+        self.assertGreater(self.monitor.next_refresh(), self.now)
+        self.start_until_downloaded(self.monitor)
+
+    def test_startup_refreshes_old_epoch_even_when_download_is_new(self):
+        self.now += timedelta(days=1, seconds=1)
+        self.monitor._refresh_once()  # New download, old epoch in provider data.
+        self.assertEqual(self.monitor.next_refresh(), self.now + timedelta(hours=24))
+        self.start_until_downloaded(self.monitor)
+        self.assertFalse(self.monitor.manual_refresh)  # Consumed once; no busy download loop.
+        self.assertEqual(self.monitor.next_refresh(), self.now + timedelta(hours=24))
+
+    def test_startup_keeps_fresh_data_without_downloading(self):
+        self.monitor._refresh_once()
+        self.now += timedelta(hours=23)
+        checked = threading.Event()
+        rebuild = self.monitor._rebuild
+        def record_rebuild():
+            try:
+                rebuild()
+            finally:
+                checked.set()
+        self.monitor._rebuild = record_rebuild
+        self.monitor.fetcher = lambda: self.fail("Fresh cache should not download on startup")
+        self.monitor.start()
+        try:
+            self.assertTrue(checked.wait(3))
+        finally:
+            self.monitor.close()
+        self.assertIsNone(self.monitor.fetch_error)
+        self.assertEqual(self.monitor.fetched_at, GeometryTests.now)
+
+    def test_startup_refreshes_missing_watched_satellite(self):
+        self.monitor._refresh_once()
+        self.monitor.settings["satellites"].append("AO-73")
+        self.start_until_downloaded(self.monitor)
+        self.assertIn(25544, self.monitor.records)
+
+    def test_startup_refresh_failure_keeps_cache_and_backoff(self):
+        self.monitor._refresh_once()
+        original_cache = (self.root / "data/elements.json").read_bytes()
+        self.now += timedelta(days=2)
+        failed = threading.Event()
+        def unavailable():
+            failed.set()
+            raise OSError("Offline")
+        self.monitor.fetcher = unavailable
+        with patch('satellite_alert.LOG'):
+            self.monitor.start()
+            try:
+                self.assertTrue(failed.wait(3))
+            finally:
+                self.monitor.close()
+        self.assertEqual((self.root / "data/elements.json").read_bytes(), original_cache)
+        self.assertEqual(self.monitor.next_refresh(), self.now + timedelta(minutes=5))
 
     def test_failed_download_keeps_good_cache_and_retries_five_minutes(self):
         self.monitor._refresh_once()
@@ -259,6 +360,30 @@ class MonitorTests(unittest.TestCase):
         self.monitor.tick()
         self.assertEqual(len(self.monitor.alerts), 1)
         self.assertLess(self.monitor.alerts[0]["elevation"], 0)
+
+    def test_five_and_twenty_minute_alarms_below_horizon_and_restart(self):
+        for mode, minutes in (("before_horizon_5", 5), ("before_horizon_20", 20)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                settings = {**self.monitor.settings, "alert_mode": mode}
+                atomic_json(root / "settings.json", settings)
+                monitor = Monitor(root, clock=lambda: self.now, fetcher=lambda: FIXTURE)
+                monitor._refresh_once()
+                monitor._rebuild()
+                pass_ = monitor.passes[0]
+                self.now = pass_.horizon_rise - timedelta(minutes=minutes, seconds=1)
+                monitor.tick()
+                self.assertEqual(monitor.alerts, [])
+                self.now += timedelta(seconds=1)
+                monitor.tick()
+                self.assertEqual(len(monitor.alerts), 1)
+                self.assertLess(monitor.alerts[0]["elevation"], 0)
+                self.assertGreaterEqual(monitor.alerts[0]["peak_elevation"], 35)
+                self.assertIn("horizon rise", monitor.alerts[0]["message"])
+                restarted = Monitor(root, clock=lambda: self.now, fetcher=lambda: FIXTURE)
+                restarted._rebuild()
+                restarted.tick()
+                self.assertEqual(len(restarted.alerts), 1)
 
     def test_earth_toggle_preserves_active_alert_and_predictions(self):
         pass_ = self.prepared()

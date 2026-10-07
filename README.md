@@ -9,14 +9,17 @@ and continuously checks the satellites' elevation from your ground station.
 Satellite Alert shows live elevation, azimuth, distance and upcoming qualifying
 passes. A local sky plot displays the selected satellite's path. Visual alerts,
 Windows sound and optional popups warn when a pass meets your minimum elevation.
-Choose an alert at the minimum angle, at horizon rise, or 10 minutes before rise.
-The Earth background can be switched off independently.
+Choose an alert at the minimum angle, at horizon rise, or **5, 10 or 20 minutes
+before rise**. The default is **5 minutes before horizon rise**. The Earth
+background is shown by default and can be switched off in the live view.
+All application text is at least **18px**, with larger headings and values.
 
 The default ground station and satellite list are:
 
 - Latitude **51.825° N** (`51.825`).
 - Longitude **0.375° W** (`-0.375`).
 - Minimum elevation **35° above your local horizon**.
+- Alert **5 minutes before horizon rise**, only for passes reaching that angle.
 - RS-44, AO-73, SO-50, ISS, FO-29, JO-97 and AO-123.
 - Observer height defaults to **0 metres above sea level**; set your station's
   actual height in Settings. Existing saved preferences are retained.
@@ -99,10 +102,10 @@ Predictions use a WGS84 observer and SGP4 through
 [Skyfield](https://rhodesmill.org/skyfield/earth-satellites.html). Atmospheric
 refraction, local buildings, trees and terrain are not modelled.
 
-By default the app alerts when the satellite actually reaches **35°**. Settings
-also offers **at horizon rise, if the pass reaches the minimum**, and
-**10 minutes before horizon rise, if the pass reaches the minimum**. The early
-option alerts while the satellite is still below your local horizon. All three
+By default the app alerts **5 minutes before horizon rise**, if the pass reaches
+**35°**. Settings also offers **10 or 20 minutes before horizon rise**, **at
+horizon rise**, and **when the satellite reaches the minimum elevation**. The early
+options alert while the satellite is still below your local horizon. All five
 timings retain the minimum predicted peak elevation requirement. Every pass in the table reaches the minimum.
 It shows the selected alert time, horizon rise, the 35° crossing, peak time/elevation
 and descent below 35°. The early alert date can be the previous day for a pass
@@ -110,7 +113,9 @@ rising shortly after midnight.
 Time display can be switched between the computer's local time zone and UTC.
 
 The **Earth image** checkbox in **Your Sky** switches the optional background on
-or off immediately and saves your choice. The same option is in Settings. The
+or off immediately and saves your choice. This is the only Earth control; there
+is no duplicate in Settings. The enlarged circle fills the available plot width.
+The background is enabled for a new installation. The
 image is decorative: the path still represents azimuth and elevation in your
 local sky, rather than an orbit drawn over a geographical Earth map. Switching
 the background does not silence an active alert or recalculate orbital data.
@@ -134,17 +139,29 @@ it immediately. A paused app still permits an explicitly requested test.
 
 The Python monitor checks every **2 seconds**. It alerts once per satellite pass,
 including a pass already underway at startup/resume. In early mode, starting
-within the 10-minute warning window also catches the approaching pass. Alert history and pass
+within the selected 5-, 10- or 20-minute warning window also catches the approaching pass. Alert history and pass
 deduplication survive restart. Small time changes after a TLE refresh do not
 produce a second alert for the same pass. Pausing stops real alerts and repeat
 sound; resuming catches a currently qualifying pass.
 
 ## Automatic downloads and continuous operation
 
-The app downloads immediately if there is no cache or the last successful
-download is due. Otherwise it uses the cache and waits until exactly 24 hours
-after that download. A manual refresh restarts that 24-hour interval. Downloading
+On **every program start**, the app immediately checks both the saved download
+timestamp and the element epochs of your watched satellites. It refreshes if
+data is missing, a watched satellite is missing, the download is at least
+**1 day old**, or a watched satellite's elements are **older than 1 day**.
+This startup check also applies if you set a longer routine download interval.
+
+After the startup check, routine downloads follow the saved interval: by default,
+exactly 24 hours after the last successful download. A manual refresh restarts
+that 24-hour interval. Downloading
 and recalculating run separately from the continuous position monitor.
+
+The startup age check runs once per program start. If AMSAT returns the same old
+element epochs, the app continues to show their actual age and follows the normal
+download/retry schedule. It avoids repeatedly downloading unchanged data.
+The **Refresh orbital data** button is at the top of the live view, next to
+**Test alert**.
 
 Failed downloads retain the last valid cache and retry after **5 minutes**. Bad
 checksums, mismatched identities and malformed records are rejected. Missing

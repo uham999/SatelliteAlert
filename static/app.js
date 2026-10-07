@@ -5,6 +5,7 @@ let state = null, selectedPass = null, selectedName = null, showAll = false, tim
 let audioContext = null, browserSound = false, soundSerial = null, notificationIds = new Set(), disconnected = false;
 let view = 'dashboard', toastTimer;
 const earthImage = new Image();
+const earlyAlertMinutes = {before_horizon_5:5, before_horizon:10, before_horizon_20:20};
 earthImage.addEventListener('load',drawSky);
 earthImage.src = '/earth-overlay.png';
 $('timeZone').value = timeZone;
@@ -69,9 +70,9 @@ function choosePass() {
 }
 function renderNext() {
   const pass = choosePass(), settings = state.settings, minimum = settings.minimum_elevation;
-  const horizon = settings.alert_mode === 'horizon', early = settings.alert_mode === 'before_horizon';
+  const horizon = settings.alert_mode === 'horizon', early = earlyAlertMinutes[settings.alert_mode] || 0;
   $('thresholdChip').textContent = `≥ ${minimum}° elevation`;
-  $('alertRule').textContent = early ? `Alerts 10 min before horizon rise · peak ≥ ${minimum}°` : horizon ? `Alerts at horizon rise · peak ≥ ${minimum}°` : `Alerts at ${minimum}° above your horizon`;
+  $('alertRule').textContent = early ? `Alerts ${early} min before horizon rise · peak ≥ ${minimum}°` : horizon ? `Alerts at horizon rise · peak ≥ ${minimum}°` : `Alerts at ${minimum}° above your horizon`;
   $('alertTimeLabel').textContent = early ? 'Early alert time' : horizon ? 'Horizon rise / alert' : `Reaches ${minimum}°`;
   $('ringLabel').textContent = `${minimum}° alert boundary`;
   $('nextName').textContent = pass ? pass.name : (state.forecast_at ? (selectedName || 'No passes') : 'Calculating…');
@@ -195,7 +196,7 @@ function drawSky() {
   canvas.width=rect.width*scale;canvas.height=rect.height*scale;
   const ctx=canvas.getContext('2d');ctx.scale(scale,scale);
   const w=rect.width,h=rect.height,cx=w/2,cy=h/2,r=Math.min(w,h)/2-28;
-  ctx.font='10px Segoe UI';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.font='18px Segoe UI';ctx.textAlign='center';ctx.textBaseline='middle';
   ctx.fillStyle='#f9fbf9';ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fill();
   if (state && state.settings.earth_overlay && earthImage.complete && earthImage.naturalWidth) {
     ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.clip();ctx.globalAlpha=.42;
@@ -207,7 +208,7 @@ function drawSky() {
   const threshold=state?state.settings.minimum_elevation:35;
   ctx.strokeStyle='#d6a246';ctx.setLineDash([4,5]);ctx.beginPath();ctx.arc(cx,cy,r*(1-threshold/90),0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);
   ctx.fillStyle='#7f928c';for(const [label,x,y] of [['N',cx,cy-r-15],['E',cx+r+16,cy],['S',cx,cy+r+16],['W',cx-r-16,cy]])ctx.fillText(label,x,y);
-  ctx.font='8px Segoe UI';ctx.fillStyle='#a0aaa4';ctx.fillText('90°',cx+13,cy+9);ctx.fillText('0°',cx+r-12,cy+11);
+  ctx.font='18px Segoe UI';ctx.fillStyle='#667b73';ctx.fillText('90°',cx+22,cy+15);ctx.fillText('0°',cx+r-23,cy+15);
   const point=(alt,az)=>{const distance=r*(1-Math.max(0,Math.min(90,alt))/90),angle=az*Math.PI/180;return [cx+Math.sin(angle)*distance,cy-Math.cos(angle)*distance];};
   const pass=choosePass();if(!pass) return;
   const path=pass.path;
@@ -217,7 +218,7 @@ function drawSky() {
     ctx.beginPath();ctx.moveTo(...from);ctx.lineTo(...to);ctx.stroke();
   }
   const peak=path.reduce((best,item)=>item.elevation>best.elevation?item:best,path[0]),peakPoint=point(peak.elevation,peak.azimuth);
-  ctx.fillStyle='#007c7a';ctx.beginPath();ctx.arc(...peakPoint,4,0,Math.PI*2);ctx.fill();ctx.font='10px Segoe UI';
+  ctx.fillStyle='#007c7a';ctx.beginPath();ctx.arc(...peakPoint,4,0,Math.PI*2);ctx.fill();ctx.font='18px Segoe UI';
   const direction=peakPoint[0]>cx?-1:1;ctx.textAlign=direction===1?'left':'right';ctx.fillText(`${pass.peak_elevation.toFixed(0)}° peak`,peakPoint[0]+direction*10,peakPoint[1]-10);ctx.textAlign='center';
   const rise=point(path[0].elevation,path[0].azimuth);ctx.fillStyle='#edf7f1';ctx.beginPath();ctx.arc(...rise,4,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#007c7a';ctx.lineWidth=1.5;ctx.stroke();
   const row=state.satellites.find(item=>item.name===pass.name);
