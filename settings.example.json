@@ -1,0 +1,24 @@
+{
+  "latitude": 51.825,
+  "longitude": -0.375,
+  "observer_height_m": 0.0,
+  "minimum_elevation": 35.0,
+  "satellites": [
+    "RS-44",
+    "AO-73",
+    "SO-50",
+    "ISS",
+    "FO-29",
+    "JO-97",
+    "AO-123"
+  ],
+  "refresh_hours": 24.0,
+  "forecast_hours": 48,
+  "maximum_tle_age_days": 7.0,
+  "alert_mode": "threshold",
+  "earth_overlay": true,
+  "sound_enabled": true,
+  "repeat_sound_seconds": 30,
+  "windows_popup": true,
+  "location_note": ""
+}

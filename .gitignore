@@ -1,0 +1,11 @@
+.venv/
+.validation/
+__pycache__/
+data/
+settings.json
+*.log
+*.pid
+dist/
+SatelliteAlert*.jpg
+SatelliteAlert.zip
+SatelliteAlert.zip.sha256

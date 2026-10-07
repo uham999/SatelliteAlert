@@ -1,0 +1,5 @@
+Generated with the built-in ImageGen tool, with transparent_background=true.
+Used as a decorative background; it is not a geographic tracking data layer.
+
+Final prompt:
+Use case: productivity-visual. Asset type: a single reusable PNG Earth globe cutout for the circular background of a satellite tracking app's sky plot. Primary request: a realistic, softly lit, full circular view of planet Earth, centred in a square, north up, showing Europe and Africa with blue oceans, natural green and tan land, and subtle white clouds. Style: restrained photorealistic globe, soft daylight, readable continent silhouettes, no dramatic glowing effects. Composition: the perfectly round globe nearly fills the square with equal narrow margins and no drop shadow outside its rim. Transparent background everywhere outside the globe. This is a decorative sky-panel background to be drawn at low opacity underneath live satellite paths, labels and grid, not a geographic map or scientific data layer. No stars, text, labels, symbols, rings, paths, satellite, watermark, or frame. Do not generate a UI or dashboard. Output one square transparent PNG.
