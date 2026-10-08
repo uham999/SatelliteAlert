@@ -192,3 +192,22 @@ visual interaction/rendering check and screenshot could not be completed. Earlie
 screenshots and layout checks above describe the earlier app version. The new
 automated interface checks do not establish current rendered appearance. The
 local app is available for viewing; refresh the page to load its new interface.
+
+## Requested serial defaults — 8 October 2026
+
+- New or empty radio settings use COM6 and 57600 baud. The settings menu now
+  offers 57600 alongside 9600, 19200 and 115200. Existing saved baud and port
+  selections are retained. Missing rotator baud uses 9600.
+- An empty rotator port selects COM3 only when detected and not already assigned
+  to the enabled radio. A previously saved port is retained even when unplugged.
+  Startup persists the filled settings without activating hardware control.
+- **96 Python tests passed on both Python 3.12.14 and 3.14.8**, and all **13 DOM
+  checks passed**. Added checks cover missing/empty settings, absent COM3,
+  existing choices, port conflicts, persistence and the new numeric baud option.
+  Parallel local runs encountered intermittent Windows connection aborts in an
+  existing HTTP rejection test; complete sequential runs passed. HTTP permission
+  checks were not changed.
+- The restarted preview selected COM6 for the radio and COM3 for the rotator.
+  Its previously saved radio baud of 9600 was preserved; rotator baud remains
+  9600. Coordinates, height and satellite preferences were retained. Live
+  tracking remains off and no physical serial port was opened.

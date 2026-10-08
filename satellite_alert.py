@@ -24,7 +24,7 @@ import webbrowser
 
 from orbits import (
     DEFAULT_SETTINGS, EARLY_ALERT_MINUTES, TLE_URL, OrbitCalculator, already_alerted, alert_due, alert_time,
-    iso, parse_tles, resolve_name, utc_now, validate_settings,
+    iso, parse_tles, resolve_name, utc_now, validate_settings, settings_for_startup,
 )
 from hardware import HardwareController, available_ports, select_target
 from profiles import doppler, DEFAULT_PROFILES
@@ -95,9 +95,11 @@ class Monitor:
         self.data = root / "data"
         self.data.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
-        self.settings = validate_settings(read_json(root / "settings.json", DEFAULT_SETTINGS))
-        if not (root / "settings.json").exists():
-            atomic_json(root / "settings.json", self.settings)
+        saved_settings = read_json(root / "settings.json", {})
+        self.settings = settings_for_startup(saved_settings, available_ports())
+        if not (root / "settings.json").exists() or any(self.settings[key] != saved_settings.get(key)
+                for key in ("radio_port", "radio_baud", "rotator_port", "rotator_baud")):
+            atomic_json(root / "settings.json", {**saved_settings, **self.settings})
         self.calculator = OrbitCalculator()
         self.sound = SoundPlayer()
         self.hardware = HardwareController()

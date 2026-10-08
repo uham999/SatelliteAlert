@@ -163,10 +163,12 @@ test('detected COM options and numeric serial settings save correctly; missing c
   const { $,w,server,requests }=await dashboard(t);
   const form=$('settingsForm');assert.match(form.elements.rotator_port.textContent,/COM10 · Test rotator/);
   form.elements.rotator_port.value='COM10';form.elements.radio_port.value='COM11';
-  form.elements.radio_baud.value='115200';form.elements.rotator_max_azimuth.value='450';
+  assert.ok([...form.elements.radio_baud.options].some(option=>option.value==='57600'));
+  assert.equal(form.elements.radio_baud.value,'57600');
+  form.elements.radio_baud.value='57600';form.elements.rotator_max_azimuth.value='450';
   form.dispatchEvent(new w.Event('submit',{cancelable:true}));await flush();
   const saved=requests.find(r=>r.url==='/api/settings').body;
-  assert.equal(saved.radio_baud,115200);assert.equal(saved.rotator_max_azimuth,450);
+  assert.equal(saved.radio_baud,57600);assert.equal(saved.rotator_max_azimuth,450);
   server.settings.radio_port='COM99';await w.__test.refreshState();w.__test.fillSettings();await flush();
   assert.equal(form.elements.radio_port.value,'COM99');assert.match(form.elements.radio_port.textContent,/COM99 · unavailable/);
 });

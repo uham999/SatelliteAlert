@@ -218,7 +218,11 @@ Settings, then press **Start live tracking** at the top of the live page. Press
 **Stop live tracking** to send the rotator stop command and close both serial
 connections. You can enable the radio, rotator, or both in Settings.
 
-1. Connect your interfaces. In Settings, use **Refresh available serial ports**, select
+1. Connect your interfaces. Unset radio settings default to **COM6 at 57600 baud**.
+   An unset rotator port selects **COM3 if detected**, with **9600 baud** by default.
+   Existing saved ports and baud rates are retained, including an already saved
+   9600 radio baud rate. If the radio already uses COM3, it is not also assigned
+   to the enabled rotator. In Settings, use **Refresh available serial ports**, select
    the detected port for each enabled device, and save. The two enabled devices
    need different ports. The app lists ports without opening them; no equipment
    is commanded until you start live tracking. Close other software using those
@@ -232,10 +236,11 @@ connections. You can enable the radio, rotator, or both in Settings.
    A `C2` position query runs on connection and at most every 5 seconds thereafter.
    The dashboard distinguishes satellite direction, last command and reported
    antenna azimuth/elevation. [Yaesu GS-232B manual](https://www.yaesu.com/jp/manuals/yaesu_m/GS-232B_EAA14X002_1803E-AS-1.pdf).
-3. For the **IC-9700**, select your CI-V interface port. The default is **9600 baud,
+3. For the **IC-9700**, select your CI-V interface port. The default is **57600 baud,
    8N1**, radio address **A2 hexadecimal** (162 decimal), controller address E0.
    Match the radio's CI-V baud and address. **19200** is also offered for REMOTE
-   interfaces. **115200** is for the radio's USB CI-V port with USB baud unlinked
+   interfaces, and **9600** remains available. Higher USB CI-V rates such as
+   **57600/115200** require the USB baud setting unlinked
    from REMOTE; select the virtual COM port carrying CI-V data. Your existing
    REMOTE USB interface handles TTL conversion.
 4. On the radio, set **USB SEND off** and **AFC off**, and clear RIT/ΔTX offsets.

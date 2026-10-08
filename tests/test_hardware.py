@@ -4,13 +4,14 @@ from datetime import timedelta
 from pathlib import Path
 import tempfile
 import unittest
+import json
 from unittest.mock import patch
 import numpy as np
 from skyfield.api import wgs84
 
 from hardware import (HardwareController, angle_change, civ_frame, decode_frequency,
                       frequency_bcd, parse_rotator_position, select_target)
-from orbits import DEFAULT_SETTINGS, OrbitCalculator, parse_tles, validate_settings
+from orbits import DEFAULT_SETTINGS, OrbitCalculator, parse_tles, validate_settings, settings_for_startup
 from profiles import DEFAULT_PROFILES, doppler
 from satellite_alert import Monitor, atomic_json
 
@@ -164,6 +165,8 @@ class ProtocolTests(unittest.TestCase):
     def test_defaults_profile_crud_validation_and_hardware_settings(self):
         settings = validate_settings({})
         self.assertEqual(settings["rotator_baud"], 9600)
+        self.assertEqual(settings["radio_port"], "COM6")
+        self.assertEqual(settings["radio_baud"], 57600)
         self.assertEqual(settings["radio_address"], "A2")
         self.assertEqual(settings["satellite_profiles"]["AO-123"]["downlink_mhz"], 435.4)
         saved = validate_settings({"satellites": ["ISS", "12345"], "satellite_profiles": {"12345": {"downlink_mhz": 145.935, "uplink_mhz": None}}})
@@ -172,6 +175,24 @@ class ProtocolTests(unittest.TestCase):
         for data in ({"radio_baud": 4800}, {"radio_address": "E0"}, {"radio_address": "FA"}, {"rotator_port": "COM4", "radio_port": "com4"}, {"satellite_profiles": {"ISS": {"downlink_mhz": float("nan")}}}, {"satellite_profiles": {"ISS": {"uplink_mode": "BAD"}}}):
             with self.subTest(data=data), self.assertRaises(ValueError):
                 validate_settings(data)
+
+    def test_unset_serial_defaults_and_conditional_rotator_port(self):
+        ports = [{"device": "COM3", "description": "Simulated rotator"}]
+        for saved in ({}, {"radio_port": "", "rotator_port": "", "radio_baud": "", "rotator_baud": None}):
+            with self.subTest(saved=saved):
+                settings = settings_for_startup(saved, ports)
+                self.assertEqual((settings["radio_port"], settings["radio_baud"]), ("COM6", 57600))
+                self.assertEqual((settings["rotator_port"], settings["rotator_baud"]), ("COM3", 9600))
+        self.assertEqual(settings_for_startup({}, [])["rotator_port"], "")
+        self.assertEqual(settings_for_startup({"radio_port": "COM3"}, ports)["rotator_port"], "")
+
+    def test_existing_port_and_baud_choices_are_preserved(self):
+        saved = {"radio_port": "COM11", "radio_baud": 115200, "rotator_port": "COM10", "rotator_baud": 4800}
+        settings = settings_for_startup(saved, [{"device": "COM3"}])
+        self.assertTrue(all(settings[key] == value for key, value in saved.items()))
+        old_defaults = settings_for_startup({"radio_port": "", "radio_baud": 9600}, [])
+        self.assertEqual(old_defaults["radio_port"], "COM6")
+        self.assertEqual(old_defaults["radio_baud"], 9600)
 
     def test_highest_current_target_ignores_stale_below_horizon_and_peak(self):
         settings = validate_settings({})
@@ -353,6 +374,27 @@ class SerialTrackingTests(unittest.TestCase):
 
 
 class MonitorEquipmentTests(unittest.TestCase):
+    def test_startup_port_defaults_persist_and_keep_saved_baud_and_location(self):
+        for initial in (None, {"radio_baud": 9600, "observer_height_m": 100}):
+            with self.subTest(initial=initial), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                if initial is not None:
+                    atomic_json(root / "settings.json", initial)
+                with patch("satellite_alert.available_ports", return_value=[{"device": "COM3"}, {"device": "COM6"}]):
+                    monitor = Monitor(root)
+                saved = json.loads((root / "settings.json").read_text())
+                self.assertEqual(saved["radio_port"], "COM6")
+                self.assertEqual(saved["rotator_port"], "COM3")
+                self.assertEqual(saved["rotator_baud"], 9600)
+                self.assertEqual(saved["radio_baud"], 57600 if initial is None else 9600)
+                self.assertEqual(saved["observer_height_m"], 0 if initial is None else 100)
+                self.assertFalse(monitor.hardware.snapshot()["enabled"])
+                monitor.close()
+                with patch("satellite_alert.available_ports", return_value=[]):
+                    restarted = Monitor(root)
+                self.assertEqual(restarted.settings, monitor.settings)
+                restarted.close()
+
     def test_frequency_changes_preserve_predictions_and_stop_hardware(self):
         calculator = OrbitCalculator()
         now = calculator.satellite(parse_tles(FIXTURE)[0][25544]).epoch.utc_datetime()

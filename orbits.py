@@ -45,8 +45,8 @@ DEFAULT_SETTINGS = {
     "rotator_baud": 9600,
     "rotator_max_azimuth": 360,
     "radio_enabled": True,
-    "radio_port": "",
-    "radio_baud": 9600,
+    "radio_port": "COM6",
+    "radio_baud": 57600,
     "radio_address": "A2",
     "radio_step_hz": 10,
     "tracking_minimum_mode": "horizon",
@@ -103,7 +103,7 @@ def validate_settings(values: dict) -> dict:
             normalised.append(name)
     result["satellites"] = normalised
     result["satellite_profiles"] = validate_profiles(result["satellite_profiles"], normalised)
-    for key, choices in (("rotator_baud", (1200, 2400, 4800, 9600)), ("radio_baud", (9600, 19200, 115200)), ("rotator_max_azimuth", (360, 450))):
+    for key, choices in (("rotator_baud", (1200, 2400, 4800, 9600)), ("radio_baud", (9600, 19200, 57600, 115200)), ("rotator_max_azimuth", (360, 450))):
         if isinstance(result[key], bool) or result[key] not in choices:
             raise ValueError(f"{key.replace('_', ' ')} must be one of {choices}.")
         result[key] = int(result[key])
@@ -121,6 +121,23 @@ def validate_settings(values: dict) -> dict:
     if not isinstance(result["location_note"], str) or len(result["location_note"]) > 500:
         raise ValueError("Location note is invalid.")
     return result
+
+
+def settings_for_startup(values: dict, ports: list) -> dict:
+    """Fill unconfigured serial fields, preserving every existing selection."""
+    if not isinstance(values, dict):
+        return validate_settings(values)  # Report the normal settings-format error.
+    initial = deepcopy(values)
+    for key in ("radio_port", "radio_baud", "rotator_baud"):
+        if initial.get(key) is None or initial.get(key) == "":
+            initial[key] = DEFAULT_SETTINGS[key]
+    if initial.get("rotator_port") is None or initial.get("rotator_port") == "":
+        com3 = next((port["device"] for port in ports if port["device"].upper() == "COM3"), "")
+        radio_port = initial["radio_port"]
+        shared = (isinstance(radio_port, str) and radio_port.upper() == "COM3"
+                  and initial.get("radio_enabled", True) and initial.get("rotator_enabled", True))
+        initial["rotator_port"] = "" if shared else com3
+    return validate_settings(initial)
 
 
 @dataclass(frozen=True)

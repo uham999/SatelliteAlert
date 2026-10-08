@@ -81,6 +81,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(self.monitor.settings["automatic_pause_start"], "00:00")
 
     def test_serial_port_listing_and_hardware_switch_reject_missing_ports(self):
+        self.assertEqual(self.request("POST", "/api/settings", {"radio_baud": 57600})[0], 200)
+        self.assertEqual(self.monitor.settings["radio_baud"], 57600)
         with patch("satellite_alert.available_ports", return_value=[{"device": "COM10", "description": "Simulated rotator"}]):
             status, body, _ = self.request("GET", "/api/ports")
         self.assertEqual(status, 200)
