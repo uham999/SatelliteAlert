@@ -172,6 +172,13 @@ used as the program's live orbital data.
   locally served map assets. Frequency-only edits preserve orbital predictions.
   Equipment-affecting changes stop live control. Hardware remains off after
   restart, and alert-pause controls remain independent of equipment control.
+- A fresh extraction of the delivery ZIP into a folder with spaces successfully
+  ran Install.cmd using Python 3.14.8, installed all six pinned dependencies,
+  passed `pip check` and all 93 Python tests, and ran both Start.cmd and Start.bat
+  with `--help`. No runtime, cache, history or Git directory is included in the ZIP.
+- GitHub's [Windows CI run for implementation commit 791c070](https://github.com/uham999/SatelliteAlert/actions/runs/37744559351)
+  passed, including both Python 3.12/3.14 jobs, the 13 interface checks and the
+  command-script checks.
 
 The updated Python monitor was launched in Codex with fresh AMSAT elements.
 Serial enumeration found the PC's Bluetooth virtual ports, but no hardware port
