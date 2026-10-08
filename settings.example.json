@@ -13,15 +13,83 @@
     "AO-123"
   ],
   "refresh_hours": 24.0,
-  "forecast_hours": 48,
+  "forecast_hours": 48.0,
   "maximum_tle_age_days": 7.0,
   "alert_mode": "before_horizon_5",
   "earth_overlay": true,
   "sound_enabled": true,
-  "repeat_sound_seconds": 30,
+  "repeat_sound_seconds": 30.0,
   "windows_popup": true,
   "automatic_pause_enabled": true,
   "automatic_pause_start": "00:00",
   "automatic_pause_hours": 7.0,
+  "satellite_profiles": {
+    "RS-44": {
+      "downlink_mhz": 435.64,
+      "uplink_mhz": 145.965,
+      "downlink_mode": "USB",
+      "uplink_mode": "LSB",
+      "notes": "Inverting linear transponder centre. Edit both frequencies to choose your channel.",
+      "source": "https://www.amsat.org/live-linear-satellites/"
+    },
+    "AO-73": {
+      "downlink_mhz": 145.96,
+      "uplink_mhz": 435.14,
+      "downlink_mode": "USB",
+      "uplink_mode": "LSB",
+      "notes": "Inverting linear transponder centre; telemetry is 145.935 MHz. Operation depends on satellite schedule.",
+      "source": "https://www.amsat.org/live-linear-satellites/"
+    },
+    "SO-50": {
+      "downlink_mhz": 436.795,
+      "uplink_mhz": 145.85,
+      "downlink_mode": "FM",
+      "uplink_mode": "FM",
+      "notes": "Set 67 Hz uplink CTCSS on the radio. Satellite activation uses a 74.4 Hz tone; this app does not transmit.",
+      "source": "https://www.amsat.org/live-fm-satellites/"
+    },
+    "ISS": {
+      "downlink_mhz": 437.8,
+      "uplink_mhz": 145.99,
+      "downlink_mode": "FM",
+      "uplink_mode": "FM",
+      "notes": "FM repeater pair, 67 Hz uplink CTCSS on the radio. Other ISS services use other frequencies.",
+      "source": "https://www.amsat.org/live-fm-satellites/"
+    },
+    "FO-29": {
+      "downlink_mhz": 435.85,
+      "uplink_mhz": 145.95,
+      "downlink_mode": "USB",
+      "uplink_mode": "LSB",
+      "notes": "Inverting linear transponder centre. Availability depends on spacecraft power and schedule.",
+      "source": "https://www.amsat.org/live-linear-satellites/"
+    },
+    "JO-97": {
+      "downlink_mhz": 145.865,
+      "uplink_mhz": 435.11,
+      "downlink_mode": "USB",
+      "uplink_mode": "LSB",
+      "notes": "Inverting linear transponder centre; edit both frequencies for your channel.",
+      "source": "https://www.amsat.org/live-linear-satellites/"
+    },
+    "AO-123": {
+      "downlink_mhz": 435.4,
+      "uplink_mhz": 145.85,
+      "downlink_mode": "FM",
+      "uplink_mode": "FM",
+      "notes": "FM repeater pair from AMSAT's live FM table. Set 67 Hz uplink CTCSS on the radio; other payloads use other frequencies.",
+      "source": "https://www.amsat.org/live-fm-satellites/"
+    }
+  },
+  "rotator_enabled": true,
+  "rotator_port": "",
+  "rotator_baud": 9600,
+  "rotator_max_azimuth": 360,
+  "radio_enabled": true,
+  "radio_port": "",
+  "radio_baud": 9600,
+  "radio_address": "A2",
+  "radio_step_hz": 10.0,
+  "tracking_minimum_mode": "horizon",
   "location_note": ""
 }

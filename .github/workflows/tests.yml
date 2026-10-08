@@ -28,8 +28,12 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Check dependency compatibility
         run: python -m pip check
-      - name: Run offline orbital and HTTP tests
+      - name: Run offline orbital, serial protocol and HTTP tests
         run: python -m unittest discover -s tests -v
+      - name: Run offline dashboard DOM checks
+        run: |
+          npm ci --ignore-scripts --no-fund --no-audit
+          npm test
       - name: Verify command launchers
         shell: cmd
         run: |

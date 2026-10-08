@@ -26,10 +26,14 @@ from orbits import (
     DEFAULT_SETTINGS, EARLY_ALERT_MINUTES, TLE_URL, OrbitCalculator, already_alerted, alert_due, alert_time,
     iso, parse_tles, resolve_name, utc_now, validate_settings,
 )
+from hardware import HardwareController, available_ports, select_target
+from profiles import doppler, DEFAULT_PROFILES
 
 ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger("satellite_alert")
 PAUSE_SETTINGS = {"automatic_pause_enabled", "automatic_pause_start", "automatic_pause_hours"}
+HARDWARE_SETTINGS = {"satellite_profiles", "rotator_enabled", "rotator_port", "rotator_baud", "rotator_max_azimuth",
+                     "radio_enabled", "radio_port", "radio_baud", "radio_address", "radio_step_hz", "tracking_minimum_mode"}
 
 
 def atomic_json(path: Path, value):
@@ -96,6 +100,8 @@ class Monitor:
             atomic_json(root / "settings.json", self.settings)
         self.calculator = OrbitCalculator()
         self.sound = SoundPlayer()
+        self.hardware = HardwareController()
+        self.tracking_target = None
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.manual_refresh = False
@@ -166,6 +172,7 @@ class Monitor:
         # epochs; keep normal refresh/retry intervals instead of looping downloads.
         with self.lock:
             self.manual_refresh = self.manual_refresh or self._startup_refresh_required()
+        self.hardware.start()
         for name, function in (("orbital-data", self._maintenance), ("pass-monitor", self._monitor)):
             thread = threading.Thread(target=function, name=name, daemon=True)
             self.threads.append(thread)
@@ -193,6 +200,7 @@ class Monitor:
         self.wake.set()
         for thread in self.threads:
             thread.join(timeout=2)
+        self.hardware.close()
 
     def next_refresh(self):
         due = self.fetched_at + timedelta(hours=self.settings["refresh_hours"]) if self.fetched_at else self.clock()
@@ -209,8 +217,11 @@ class Monitor:
             if "latitude" in values or "longitude" in values:
                 combined["location_note"] = ""
             settings = validate_settings(combined)
-            recalculate = any(settings[key] != self.settings[key] for key in settings if key not in PAUSE_SETTINGS | {"earth_overlay"})
+            recalculate = any(settings[key] != self.settings[key] for key in settings if key not in PAUSE_SETTINGS | HARDWARE_SETTINGS | {"earth_overlay"})
+            hardware_changed = any(settings[key] != self.settings[key] for key in HARDWARE_SETTINGS | {"latitude", "longitude", "observer_height_m", "minimum_elevation", "satellites"})
             pause_changed = any(settings[key] != self.settings[key] for key in PAUSE_SETTINGS)
+            if hardware_changed:
+                self.hardware.set_enabled(False, settings)
             atomic_json(self.root / "settings.json", settings)
             self.settings = settings
             if pause_changed:
@@ -225,6 +236,7 @@ class Monitor:
                 for alert in self.alerts:
                     alert["acknowledged"] = True
                 self._persist_alerts()
+            self._update_tracking()
         if recalculate:
             self.wake.set()
 
@@ -233,6 +245,18 @@ class Monitor:
         self.ledger = [entry for entry in self.ledger if datetime.fromisoformat(entry["horizon_rise"]) > cutoff]
         self.alerts = self.alerts[-100:]
         atomic_json(self.data / "alerts.json", {"ledger": self.ledger, "alerts": self.alerts})
+
+    def _update_tracking(self):
+        for row in self.satellite_status:
+            if row.get("status") == "tracking" and "range_rate_km_s" in row:
+                row["doppler"] = doppler(self.settings["satellite_profiles"][row["name"]], row["range_rate_km_s"])
+        self.tracking_target = select_target(self.satellite_status, self.settings)
+        self.hardware.offer(self.tracking_target, self.settings)
+
+    def toggle_tracking(self, enabled):
+        with self.lock:
+            self._update_tracking()
+            self.hardware.set_enabled(enabled, self.settings)
 
     def acknowledge(self, alert_id: str | None = None):
         with self.lock:
@@ -377,12 +401,13 @@ class Monitor:
                     row.update(status="stale", detail="Orbital data too old; alerts suppressed.")
                     continue
                 try:
-                    row.update(self.calculator.position(satellite, observer, now))
+                    row.update(self.calculator.position(satellite, observer, now, ground=True))
                     row.update(status="tracking", detail="Ready")
                     ready.add(name)
                 except Exception as error:
                     row.update(status="error", detail=str(error))
             new_alerts = []
+            self._update_tracking()
             if not self.paused:
                 for pass_ in self.passes:
                     if pass_.name not in ready or not alert_due(pass_, self.settings["alert_mode"], now) or already_alerted(pass_, self.ledger):
@@ -472,6 +497,7 @@ class Monitor:
             for alert in alerts:
                 alert["active"] = not alert["acknowledged"] and datetime.fromisoformat(alert["expires_at"]) > now
             return dict(now=iso(now), settings=dict(self.settings), satellites=rows, passes=windows,
+                        tracking_target=deepcopy(self.tracking_target), hardware=self.hardware.snapshot(),
                         alerts=alerts[::-1], fetched_at=iso(self.fetched_at), next_refresh_at=iso(self.next_refresh()),
                         forecast_at=iso(self.forecast_at), last_tick=iso(self.last_tick),
                         updating=self.updating, fetch_error=self.fetch_error, forecast_error=self.forecast_error,
@@ -533,10 +559,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, snapshot)
         if path == "/api/elements":
             return self._send(200, self.server.monitor.filtered_elements(), "text/plain; charset=utf-8")
+        if path == "/api/ports":
+            return self._send(200, {"ports": available_ports(), "default_profiles": DEFAULT_PROFILES})
         if path == "/api/health":
             return self._send(200, {"ok": True, "app": "NextSatellite", "last_tick": iso(self.server.monitor.last_tick)})
         files = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"), "/style.css": ("style.css", "text/css"),
-                 "/earth-overlay.png": ("earth-overlay.png", "image/png")}
+                 "/earth-overlay.png": ("earth-overlay.png", "image/png"),
+                 "/d3-array.min.js": ("d3-array.min.js", "text/javascript"), "/d3-geo.min.js": ("d3-geo.min.js", "text/javascript"),
+                 "/world-land.json": ("world-land.json", "application/json")}
         if path in files:
             name, content_type = files[path]
             if content_type.startswith("text/"):
@@ -565,6 +595,8 @@ class Handler(BaseHTTPRequestHandler):
                 monitor.acknowledge(data.get("id"))
             elif self.path == "/api/pause":
                 monitor.toggle_pause(data.get("paused"))
+            elif self.path == "/api/tracking":
+                monitor.toggle_tracking(data.get("enabled"))
             elif self.path == "/api/test-alert":
                 monitor.test_alert()
             elif self.path == "/api/stop":

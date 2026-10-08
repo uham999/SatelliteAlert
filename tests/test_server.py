@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from orbits import DEFAULT_SETTINGS
 from satellite_alert import LocalServer, Monitor, ROOT, atomic_json
@@ -50,7 +51,7 @@ class DashboardServerTests(unittest.TestCase):
         return result
 
     def test_dashboard_assets_and_live_state(self):
-        for path in ("/", "/app.js", "/style.css", "/api/health"):
+        for path in ("/", "/app.js", "/style.css", "/api/health", "/d3-array.min.js", "/d3-geo.min.js", "/world-land.json"):
             with self.subTest(path=path):
                 status, body, _ = self.request("GET", path)
                 self.assertEqual(status, 200)
@@ -61,6 +62,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(value["satellites"][0]["name"], "ISS")
         self.assertTrue(value["passes"])
         self.assertEqual(value["settings"]["minimum_elevation"], 35)
+        self.assertIn("ground_latitude", value["satellites"][0])
+        self.assertIn("ground_longitude", value["satellites"][0])
+        self.assertIn("range_rate_km_s", value["satellites"][0])
 
     def test_automatic_pause_settings_and_manual_resume_via_http(self):
         generation = self.monitor.generation
@@ -75,6 +79,33 @@ class DashboardServerTests(unittest.TestCase):
         self.assertTrue(json.loads(body)["automatic_pause_overridden"])
         self.assertEqual(self.request("POST", "/api/settings", {"automatic_pause_start": "25:00"})[0], 400)
         self.assertEqual(self.monitor.settings["automatic_pause_start"], "00:00")
+
+    def test_serial_port_listing_and_hardware_switch_reject_missing_ports(self):
+        with patch("satellite_alert.available_ports", return_value=[{"device": "COM10", "description": "Simulated rotator"}]):
+            status, body, _ = self.request("GET", "/api/ports")
+        self.assertEqual(status, 200)
+        value = json.loads(body)
+        self.assertEqual(value["ports"][0]["device"], "COM10")
+        self.assertEqual(value["default_profiles"]["SO-50"]["downlink_mhz"], 436.795)
+        self.monitor.hardware.ports_provider = lambda: []
+        self.assertEqual(self.request("POST", "/api/tracking", {"enabled": True})[0], 400)
+        self.assertFalse(self.monitor.hardware.snapshot()["enabled"])
+        self.assertEqual(self.request("POST", "/api/tracking", {"enabled": False})[0], 200)
+
+    def test_satellite_frequency_crud_persists_without_frequency_reforecast(self):
+        profile = {"downlink_mhz": 145.935, "uplink_mhz": None, "downlink_mode": "USB", "uplink_mode": "LSB", "notes": "receive test"}
+        self.assertEqual(self.request("POST", "/api/settings", {"satellites": ["ISS", "12345"], "satellite_profiles": {"12345": profile}})[0], 200)
+        self.assertIn("12345", self.monitor.settings["satellite_profiles"])
+        generation = self.monitor.generation
+        profile["downlink_mhz"] = 145.936
+        profiles = {**self.monitor.settings["satellite_profiles"], "12345": profile}
+        self.assertEqual(self.request("POST", "/api/settings", {"satellite_profiles": profiles})[0], 200)
+        self.assertEqual(self.monitor.generation, generation)
+        self.assertEqual(self.monitor.settings["satellite_profiles"]["12345"]["downlink_mhz"], 145.936)
+        self.assertEqual(self.request("POST", "/api/settings", {"satellites": ["ISS"]})[0], 200)
+        self.assertNotIn("12345", self.monitor.settings["satellite_profiles"])
+        saved = json.loads((self.root / "settings.json").read_text())
+        self.assertEqual(saved["satellites"], ["ISS"])
 
     def test_earth_image_served_locally_and_early_timing_saved(self):
         status, body, headers = self.request("GET", "/earth-overlay.png")

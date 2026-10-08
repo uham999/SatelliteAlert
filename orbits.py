@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import math
 import re
 
 import numpy as np
 from skyfield.api import EarthSatellite, load, wgs84
+from profiles import DEFAULT_PROFILES, validate_profiles
 
 UTC = timezone.utc
 TLE_URL = "https://www.amsat.org/tle/current/nasabare.txt"
@@ -37,6 +39,17 @@ DEFAULT_SETTINGS = {
     "automatic_pause_enabled": True,
     "automatic_pause_start": "00:00",
     "automatic_pause_hours": 7.0,
+    "satellite_profiles": DEFAULT_PROFILES,
+    "rotator_enabled": True,
+    "rotator_port": "",
+    "rotator_baud": 9600,
+    "rotator_max_azimuth": 360,
+    "radio_enabled": True,
+    "radio_port": "",
+    "radio_baud": 9600,
+    "radio_address": "A2",
+    "radio_step_hz": 10,
+    "tracking_minimum_mode": "horizon",
     "location_note": "",
 }
 
@@ -53,7 +66,7 @@ def validate_settings(values: dict) -> dict:
     """Validate before saving anything; reject NaN, infinity and invalid names."""
     if not isinstance(values, dict):
         raise ValueError("Settings must be a JSON object.")
-    result = dict(DEFAULT_SETTINGS)
+    result = deepcopy(DEFAULT_SETTINGS)
     result.update({k: v for k, v in values.items() if k in result})
     bounds = {
         "latitude": (-90, 90), "longitude": (-180, 180),
@@ -61,6 +74,7 @@ def validate_settings(values: dict) -> dict:
         "refresh_hours": (1, 168), "forecast_hours": (6, 168),
         "maximum_tle_age_days": (1, 14), "repeat_sound_seconds": (10, 600),
         "automatic_pause_hours": (0.25, 24),
+        "radio_step_hz": (1, 1000),
     }
     for key, (lower, upper) in bounds.items():
         try:
@@ -70,7 +84,7 @@ def validate_settings(values: dict) -> dict:
         if isinstance(result[key], bool) or not math.isfinite(value) or not lower <= value <= upper:
             raise ValueError(f"{key.replace('_', ' ')} must be between {lower} and {upper}.")
         result[key] = value
-    for key in ("sound_enabled", "windows_popup", "earth_overlay", "automatic_pause_enabled"):
+    for key in ("sound_enabled", "windows_popup", "earth_overlay", "automatic_pause_enabled", "rotator_enabled", "radio_enabled"):
         if not isinstance(result[key], bool):
             raise ValueError(f"{key} must be true or false.")
     if not isinstance(result["automatic_pause_start"], str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", result["automatic_pause_start"]):
@@ -88,6 +102,22 @@ def validate_settings(values: dict) -> dict:
         if name not in normalised:
             normalised.append(name)
     result["satellites"] = normalised
+    result["satellite_profiles"] = validate_profiles(result["satellite_profiles"], normalised)
+    for key, choices in (("rotator_baud", (1200, 2400, 4800, 9600)), ("radio_baud", (9600, 19200, 115200)), ("rotator_max_azimuth", (360, 450))):
+        if isinstance(result[key], bool) or result[key] not in choices:
+            raise ValueError(f"{key.replace('_', ' ')} must be one of {choices}.")
+        result[key] = int(result[key])
+    for key in ("rotator_port", "radio_port"):
+        if not isinstance(result[key], str) or len(result[key]) > 200 or any(ord(char) < 32 for char in result[key]):
+            raise ValueError("Select a valid serial port.")
+    if result["rotator_port"] and result["radio_port"] and result["rotator_port"].casefold() == result["radio_port"].casefold() and result["rotator_enabled"] and result["radio_enabled"]:
+        raise ValueError("The rotator and radio must use different serial ports.")
+    address = result["radio_address"]
+    if not isinstance(address, str) or not re.fullmatch(r"(?:0[xX])?[0-9a-fA-F]{2}", address) or not 1 <= int(address, 16) <= 0xDF:
+        raise ValueError("CI-V radio address must be hexadecimal 01 to DF; default A2.")
+    result["radio_address"] = f"{int(address, 16):02X}"
+    if result["tracking_minimum_mode"] not in ("horizon", "threshold"):
+        raise ValueError("Choose horizon or minimum elevation for live tracking.")
     if not isinstance(result["location_note"], str) or len(result["location_note"]) > 500:
         raise ValueError("Location note is invalid.")
     return result
@@ -185,15 +215,24 @@ class OrbitCalculator:
     def observer(settings: dict):
         return wgs84.latlon(settings["latitude"], settings["longitude"], settings["observer_height_m"])
 
-    def position(self, satellite, observer, now: datetime) -> dict:
-        position = (satellite - observer).at(self.ts.from_datetime(now))
+    def position(self, satellite, observer, now: datetime, ground=False) -> dict:
+        moment = self.ts.from_datetime(now)
+        position = (satellite - observer).at(moment)
         if position.message:
             raise ValueError(str(position.message))
         altitude, azimuth, distance = position.altaz()
-        values = [float(altitude.degrees), float(azimuth.degrees), float(distance.km)]
+        rate = float(np.dot(position.position.km, position.velocity.km_per_s) / distance.km)
+        values = [float(altitude.degrees), float(azimuth.degrees), float(distance.km), rate]
         if not all(math.isfinite(value) for value in values):
             raise ValueError("Orbit propagation produced an invalid position.")
-        return dict(elevation=values[0], azimuth=values[1], range_km=values[2])
+        result = dict(elevation=values[0], azimuth=values[1], range_km=values[2], range_rate_km_s=values[3])
+        if ground:
+            location = wgs84.geographic_position_of(satellite.at(moment))
+            result.update(ground_latitude=float(location.latitude.degrees), ground_longitude=float(location.longitude.degrees),
+                          satellite_height_km=float(location.elevation.km))
+            if not all(math.isfinite(result[key]) for key in ("ground_latitude", "ground_longitude", "satellite_height_km")):
+                raise ValueError("Orbit propagation produced an invalid ground position.")
+        return result
 
     def _segments(self, satellite, observer, start, end, altitude):
         times, codes = satellite.find_events(observer, self.ts.from_datetime(start), self.ts.from_datetime(end), altitude_degrees=altitude)

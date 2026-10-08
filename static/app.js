@@ -4,6 +4,8 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':
 let state = null, selectedPass = null, selectedName = null, showAll = false, timeZone = localStorage.getItem('satellite-time-zone') || 'local';
 let audioContext = null, browserSound = false, soundSerial = null, notificationIds = new Set(), disconnected = false;
 let view = 'dashboard', toastTimer;
+let serialPorts=[], defaultProfiles={}, editingSatellite=null, profileEditorOpen=false;
+let worldLand=null, worldLandRequest=null;
 const earthImage = new Image();
 const earlyAlertMinutes = {before_horizon_5:5, before_horizon:10, before_horizon_20:20};
 earthImage.addEventListener('load',drawSky);
@@ -54,10 +56,14 @@ function fillSettings() {
   for (const [key,value] of Object.entries(state.settings)) {
     const field = $('settingsForm').elements.namedItem(key);
     if (!field) continue;
-    if (field.type === 'checkbox') field.checked = value;
+    if (key==='rotator_port' || key==='radio_port') {
+      field.replaceChildren(new Option(value || 'Select a port',value));
+      field.value=value;
+    } else if (field.type === 'checkbox') field.checked = value;
     else field.value = key === 'satellites' ? value.join('\n') : value;
   }
   $('notificationStatus').textContent = 'Notification' in window ? `Browser permission: ${Notification.permission}` : 'Notifications unavailable in this browser.';
+  renderProfiles();refreshPorts(true);
 }
 function choosePass() {
   if (!state || !state.passes.length) return null;
@@ -80,6 +86,9 @@ function renderNext() {
   $('nextStart').textContent = pass ? formatTime(pass.alert_at,true) : '—';
   $('nextPeak').textContent = pass ? `${pass.peak_elevation.toFixed(1)}°` : '—';
   $('nextDuration').textContent = pass ? duration((new Date(pass.threshold_set)-new Date(pass.threshold_rise))/1000) : '—';
+  const position=state.satellites.find(row=>row.name===(selectedName || (pass && pass.name)) && row.status==='tracking' && row.azimuth!=null && row.elevation!=null);
+  $('nextAzimuth').textContent=position ? `${position.azimuth.toFixed(1)}°` : '—';
+  $('nextElevation').textContent=position ? `${position.elevation.toFixed(1)}°` : '—';
   $('pathLabel').textContent = pass ? `${pass.name} path` : 'Predicted path';
   $('skyCaption').textContent = selectedName || selectedPass ? 'Selected pass path' : 'Next pass path';
   updateCountdown(); drawSky();
@@ -180,54 +189,175 @@ function renderStatus() {
   $('soundStatus').textContent=s.sound_enabled ? (browserSound && !state.native_sound ? 'Browser chime enabled' : state.sound_status) : 'Sound disabled in Settings';
   $('enableSound').classList.toggle('hidden',state.native_sound && !state.sound_status.includes('failed') || browserSound);
 }
-function render() {renderStatus();renderNext();renderFleet();renderTable();renderAlerts();}
+function render() {renderStatus();renderNext();renderFleet();renderTable();renderAlerts();renderTracking();}
+async function refreshState() {
+  const response=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(8000)});
+  if(!response.ok) throw new Error('App unavailable');
+  const initial=!state;state=await response.json();disconnected=false;render();if(initial) fillSettings();
+}
 async function poll() {
   try {
-    const response=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(8000)});
-    if(!response.ok) throw new Error('App unavailable');
-    const initial=!state;state=await response.json();disconnected=false;render();if(initial) fillSettings();
+    await refreshState();
   }catch(error){
     disconnected=true;$('connection').classList.add('offline');$('connection').innerHTML='<i></i> Monitor disconnected';
     $('notice').textContent='The dashboard cannot reach the Python monitor. Start the program again to resume live tracking and alerts.';$('notice').classList.remove('hidden');
   }finally{setTimeout(poll,2000);}
 }
 
+function visibleSatellites() {
+  return state ? state.satellites.filter(row=>row.status==='tracking' && row.elevation>=0 && row.azimuth!=null).sort((a,b)=>b.elevation-a.elevation) : [];
+}
 function drawSky() {
-  const canvas=$('sky');if(!canvas.clientWidth || view!=='dashboard') return;
+  if(view==='dashboard')drawSkyCanvas($('sky'));
+  if($('skyDialog').open) {
+    const world=$('expandedMapMode').value==='world';
+    if(world)drawWorldCanvas($('expandedSky'));else drawSkyCanvas($('expandedSky'));
+    $('expandedMapNote').textContent=world?'Gold marks the highest satellite. Purple marks your ground station at the centre. Markers show the point on Earth beneath each satellite. Positions update every 2 seconds.':'Gold marks the highest satellite. North is up; the circle edge is your local horizon. Positions update every 2 seconds.';
+  }
+}
+async function loadWorldLand() {
+  if(worldLand || worldLandRequest)return worldLandRequest;
+  worldLandRequest=(async()=>{
+    try{const response=await fetch('/world-land.json');if(!response.ok)throw new Error('Earth map unavailable.');worldLand=await response.json();drawSky();}
+    catch(error){toast(error.message);}finally{worldLandRequest=null;}
+  })();return worldLandRequest;
+}
+function drawWorldCanvas(canvas) {
+  if(!state || !canvas.clientWidth)return;
   const rect=canvas.getBoundingClientRect(),scale=window.devicePixelRatio||1;
   canvas.width=rect.width*scale;canvas.height=rect.height*scale;
   const ctx=canvas.getContext('2d');ctx.scale(scale,scale);
-  const w=rect.width,h=rect.height,cx=w/2,cy=h/2,r=Math.min(w,h)/2-28;
+  const w=rect.width,h=rect.height,r=Math.min(w,h)/2-24,cx=w/2,cy=h/2,s=state.settings;
+  const projection=d3.geoOrthographic().rotate([-s.longitude,-s.latitude]).translate([cx,cy]).scale(r).precision(.5);
+  const path=d3.geoPath(projection,ctx);
+  ctx.beginPath();path({type:'Sphere'});ctx.fillStyle='#dceef3';ctx.fill();ctx.strokeStyle='#94bac3';ctx.lineWidth=1.5;ctx.stroke();
+  if(worldLand){ctx.beginPath();path(worldLand);ctx.fillStyle='#b4d4bf';ctx.fill();ctx.strokeStyle='#7ca58b';ctx.lineWidth=1;ctx.stroke();}
+  ctx.beginPath();path(d3.geoGraticule10());ctx.strokeStyle='#adc8cf';ctx.lineWidth=.7;ctx.stroke();
+  ctx.strokeStyle='#8557b2';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(cx-9,cy);ctx.lineTo(cx+9,cy);ctx.moveTo(cx,cy-9);ctx.lineTo(cx,cy+9);ctx.stroke();
+  ctx.font='18px Segoe UI';ctx.fillStyle='#634181';ctx.textAlign='center';ctx.fillText('Your ground station',cx,cy+26);
+  const visible=visibleSatellites().filter(row=>Number.isFinite(row.ground_latitude) && Number.isFinite(row.ground_longitude));
+  drawSatelliteMarkers(ctx,visible,row=>projection([row.ground_longitude,row.ground_latitude]),w,h);
+}
+function drawSkyCanvas(canvas) {
+  if(!canvas.clientWidth)return;
+  const rect=canvas.getBoundingClientRect(),scale=window.devicePixelRatio||1;
+  canvas.width=rect.width*scale;canvas.height=rect.height*scale;
+  const ctx=canvas.getContext('2d');ctx.scale(scale,scale);
+  const w=rect.width,h=rect.height,cx=w/2,cy=h/2,r=Math.min(w,h)/2-30;
   ctx.font='18px Segoe UI';ctx.textAlign='center';ctx.textBaseline='middle';
   ctx.fillStyle='#f9fbf9';ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fill();
-  if (state && state.settings.earth_overlay && earthImage.complete && earthImage.naturalWidth) {
+  if(state && state.settings.earth_overlay && earthImage.complete && earthImage.naturalWidth) {
     ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.clip();ctx.globalAlpha=.42;
     ctx.drawImage(earthImage,cx-r,cy-r,r*2,r*2);ctx.restore();
   }
-  ctx.strokeStyle='#e0e8e3';ctx.lineWidth=1;
+  ctx.strokeStyle='#dde5e2';ctx.lineWidth=1;
   for(const elevation of [0,30,60]){ctx.beginPath();ctx.arc(cx,cy,r*(1-elevation/90),0,Math.PI*2);ctx.stroke();}
-  ctx.strokeStyle='#e9eeeb';ctx.beginPath();ctx.moveTo(cx-r,cy);ctx.lineTo(cx+r,cy);ctx.moveTo(cx,cy-r);ctx.lineTo(cx,cy+r);ctx.stroke();
+  ctx.strokeStyle='#e2e9e6';ctx.beginPath();ctx.moveTo(cx-r,cy);ctx.lineTo(cx+r,cy);ctx.moveTo(cx,cy-r);ctx.lineTo(cx,cy+r);ctx.stroke();
   const threshold=state?state.settings.minimum_elevation:35;
-  ctx.strokeStyle='#d6a246';ctx.setLineDash([4,5]);ctx.beginPath();ctx.arc(cx,cy,r*(1-threshold/90),0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);
-  ctx.fillStyle='#7f928c';for(const [label,x,y] of [['N',cx,cy-r-15],['E',cx+r+16,cy],['S',cx,cy+r+16],['W',cx-r-16,cy]])ctx.fillText(label,x,y);
-  ctx.font='18px Segoe UI';ctx.fillStyle='#667b73';ctx.fillText('90°',cx+22,cy+15);ctx.fillText('0°',cx+r-23,cy+15);
+  ctx.strokeStyle='#b78630';ctx.setLineDash([4,5]);ctx.beginPath();ctx.arc(cx,cy,r*(1-threshold/90),0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle='#667b73';for(const [label,x,y] of [['N',cx,cy-r-15],['E',cx+r+16,cy],['S',cx,cy+r+16],['W',cx-r-16,cy]])ctx.fillText(label,x,y);
+  ctx.fillText('90°',cx+22,cy+15);ctx.fillText('0°',cx+r-23,cy+15);
   const point=(alt,az)=>{const distance=r*(1-Math.max(0,Math.min(90,alt))/90),angle=az*Math.PI/180;return [cx+Math.sin(angle)*distance,cy-Math.cos(angle)*distance];};
-  const pass=choosePass();if(!pass) return;
-  const path=pass.path;
-  for(let i=1;i<path.length;i++){
-    const from=point(path[i-1].elevation,path[i-1].azimuth),to=point(path[i].elevation,path[i].azimuth);
-    ctx.strokeStyle=path[i].elevation>=threshold?'#007c7a':'#9ecac1';ctx.lineWidth=path[i].elevation>=threshold?2.8:1.8;
-    ctx.beginPath();ctx.moveTo(...from);ctx.lineTo(...to);ctx.stroke();
+  const visible=visibleSatellites(),target=state && state.tracking_target;
+  const pass=target ? state.passes.find(p=>p.name===target.name && new Date(p.horizon_rise)<=new Date(state.now) && new Date(p.horizon_set)>=new Date(state.now)) : choosePass();
+  if(pass && pass.path.length) {
+    const path=pass.path;
+    for(let i=1;i<path.length;i++){
+      const from=point(path[i-1].elevation,path[i-1].azimuth),to=point(path[i].elevation,path[i].azimuth);
+      ctx.strokeStyle=path[i].elevation>=threshold?'#007c7a':'#88b9ae';ctx.lineWidth=path[i].elevation>=threshold?3:2;
+      ctx.beginPath();ctx.moveTo(...from);ctx.lineTo(...to);ctx.stroke();
+    }
   }
-  const peak=path.reduce((best,item)=>item.elevation>best.elevation?item:best,path[0]),peakPoint=point(peak.elevation,peak.azimuth);
-  ctx.fillStyle='#007c7a';ctx.beginPath();ctx.arc(...peakPoint,4,0,Math.PI*2);ctx.fill();ctx.font='18px Segoe UI';
-  const direction=peakPoint[0]>cx?-1:1;ctx.textAlign=direction===1?'left':'right';ctx.fillText(`${pass.peak_elevation.toFixed(0)}° peak`,peakPoint[0]+direction*10,peakPoint[1]-10);ctx.textAlign='center';
-  const rise=point(path[0].elevation,path[0].azimuth);ctx.fillStyle='#edf7f1';ctx.beginPath();ctx.arc(...rise,4,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#007c7a';ctx.lineWidth=1.5;ctx.stroke();
-  const row=state.satellites.find(item=>item.name===pass.name);
-  if(row && row.elevation>=0 && Date.now()>=new Date(pass.horizon_rise) && Date.now()<=new Date(pass.horizon_set)){
-    const position=point(row.elevation,row.azimuth);ctx.fillStyle='#f8b956';ctx.beginPath();ctx.arc(...position,7,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();
+  drawSatelliteMarkers(ctx,visible,row=>point(row.elevation,row.azimuth),w,h);
+}
+function drawSatelliteMarkers(ctx,visible,point,w,h) {
+  const labels=[];
+  // Draw the highest last so its larger gold marker remains visible at overlaps.
+  for(const row of [...visible].reverse()) {
+    const highest=row.name===visible[0].name,[x,y]=point(row);
+    ctx.fillStyle=highest?'#e5a32c':'#007c7a';ctx.beginPath();ctx.arc(x,y,highest?11:7,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();
+    if(highest){ctx.strokeStyle='#995d05';ctx.beginPath();ctx.arc(x,y,15,0,Math.PI*2);ctx.stroke();}
+    ctx.font=highest?'bold 20px Segoe UI':'18px Segoe UI';ctx.textAlign='left';
+    const text=row.name,width=ctx.measureText(text).width+12;
+    const candidates=[[x+19,y-20],[x-width-19,y-20],[x+19,y+20],[x-width-19,y+20],[x+19,y-45],[x-width-19,y+45]];
+    let box;
+    for(const [bx,by] of candidates){box={x:Math.max(5,Math.min(w-width-5,bx)),y:Math.max(15,Math.min(h-15,by)),width};if(!labels.some(b=>Math.abs(b.y-box.y)<25 && b.x<box.x+box.width && box.x<b.x+b.width))break;}
+    labels.push(box);ctx.fillStyle='#ffffffdd';ctx.fillRect(box.x-3,box.y-13,width,26);ctx.fillStyle=highest?'#704600':'#005957';ctx.fillText(text,box.x+3,box.y);
   }
 }
+
+function mhz(value){return value==null?'—':`${(value/1000000).toFixed(6)} MHz`;}
+function liveDetails(row) {
+  const f=row.doppler || {};
+  const ground=Number.isFinite(row.ground_latitude)?`<p class="ground-position">Above ${Math.abs(row.ground_latitude).toFixed(2)}° ${row.ground_latitude>=0?'N':'S'}, ${Math.abs(row.ground_longitude).toFixed(2)}° ${row.ground_longitude>=0?'E':'W'} · altitude ${Math.round(row.satellite_height_km)} km</p>`:'';
+  return `<div class="live-name"><strong>${esc(row.name)}</strong><span class="tag teal">${row.elevation.toFixed(1)}° elevation</span></div>${ground}<div class="live-metrics"><div><span>Satellite azimuth</span><strong>${row.azimuth.toFixed(1)}°</strong></div><div><span>Satellite elevation</span><strong>${row.elevation.toFixed(1)}°</strong></div><div><span>Downlink / RX · Doppler corrected</span><strong>${mhz(f.rx_hz)}</strong><span>${f.rx_shift_hz==null?'Set a frequency':`${f.rx_shift_hz>=0?'+':''}${f.rx_shift_hz} Hz shift`}</span></div><div><span>Uplink / TX · Doppler corrected</span><strong>${mhz(f.tx_hz)}</strong><span>${f.tx_shift_hz==null?'Receive only':`${f.tx_shift_hz>=0?'+':''}${f.tx_shift_hz} Hz shift`}</span></div></div>`;
+}
+function renderTracking() {
+  const h=state.hardware,target=state.tracking_target,visible=visibleSatellites();
+  $('trackingToggle').textContent=h.enabled?'Stop live tracking':'Start live tracking';
+  $('trackingToggle').classList.toggle('tracking-on',h.enabled);
+  $('trackingSummary').textContent=h.enabled?(target?`Tracking ${target.name} · highest current elevation · ${visible.length} above the horizon`:'Tracking is enabled. Waiting for a satellite above the tracking limit.'):'Live adjustments are off. Start live tracking to control your configured equipment.';
+  $('liveTarget').innerHTML=target?liveDetails(target):'<p class="subtle">No watched satellite is currently above the tracking limit.</p>';
+  const pos=h.rotator_position,command=h.commanded_position;
+  $('equipmentStatus').innerHTML=`<div class="equipment-grid"><div><strong>Rotator · ${esc(h.rotator_status)}</strong><p>Reported: ${pos?`az ${pos.azimuth}° · el ${pos.elevation}°`:'—'}</p><p>Last command: ${command?`az ${command.azimuth}° · el ${command.elevation}°`:'—'}</p></div><div><strong>Radio · ${esc(h.radio_status)}</strong><p>Verified RX: ${mhz(h.radio_rx_hz)}</p><p>Verified TX: ${mhz(h.radio_tx_hz)}</p></div></div>${h.error?`<p class="equipment-error">${esc(h.error)}</p>`:''}`;
+  $('expandedSummary').textContent=`${visible.length} watched satellite${visible.length===1?'':'s'} above the horizon${visible.length?` · highest: ${visible[0].name} at ${visible[0].elevation.toFixed(1)}°`:''}`;
+  $('expandedSatellites').innerHTML=visible.length?visible.map((row,i)=>`<article class="expanded-satellite ${i===0?'highest':''}">${liveDetails(row)}</article>`).join(''):'<p>No watched satellite is currently above the horizon. The sky continues to update.</p>';
+}
+async function refreshPorts(useSaved=false) {
+  try {
+    const response=await fetch('/api/ports',{cache:'no-store'});if(!response.ok)throw new Error('Cannot list serial ports.');
+    const result=await response.json();serialPorts=result.ports;defaultProfiles=result.default_profiles;
+    for(const key of ['rotator_port','radio_port']) {
+      const select=$('settingsForm').elements.namedItem(key),chosen=useSaved?state.settings[key]:select.value;
+      select.replaceChildren(new Option('Select a port',''));
+      for(const port of serialPorts)select.add(new Option(`${port.device} · ${port.description}`,port.device));
+      if(chosen && !serialPorts.some(p=>p.device===chosen))select.add(new Option(`${chosen} · unavailable`,chosen));
+      select.value=chosen;
+    }
+    $('portsStatus').textContent=serialPorts.length?`${serialPorts.length} serial port(s) available.`:'No serial ports found. Connect your USB interfaces and refresh.';
+  } catch(error){$('portsStatus').textContent=error.message;}
+}
+function renderProfiles() {
+  if(!state)return;
+  $('profileList').innerHTML=state.settings.satellites.map(name=>{const p=state.settings.satellite_profiles[name];return `<article class="profile-row"><strong>${esc(name)}</strong><p>RX ${p.downlink_mhz==null?'unset':p.downlink_mhz.toFixed(6)+' MHz'} · ${esc(p.downlink_mode)}<br>TX ${p.uplink_mhz==null?'receive only':p.uplink_mhz.toFixed(6)+' MHz'} · ${esc(p.uplink_mode)}</p><p>${esc(p.notes)}</p><div class="profile-actions"><button type="button" class="button" data-edit="${esc(name)}">Edit ${esc(name)}</button><button type="button" class="text-button" data-delete="${esc(name)}">Remove ${esc(name)}</button></div></article>`;}).join('');
+  $('profileList').querySelectorAll('[data-edit]').forEach(button=>button.addEventListener('click',()=>editProfile(button.dataset.edit)));
+  $('profileList').querySelectorAll('[data-delete]').forEach(button=>button.addEventListener('click',async()=>{
+    const name=button.dataset.delete,names=state.settings.satellites.filter(n=>n!==name),profiles={...state.settings.satellite_profiles};delete profiles[name];
+    try{await post('/api/settings',{satellites:names,satellite_profiles:profiles});await refreshState();renderProfiles();toast(`${name} removed.`);}catch(error){toast(error.message);}
+  }));
+}
+function fillProfile(p) {
+  $('profileRx').value=p.downlink_mhz??'';$('profileTx').value=p.uplink_mhz??'';
+  $('profileRxMode').value=p.downlink_mode||'USB';$('profileTxMode').value=p.uplink_mode||'LSB';$('profileNotes').value=p.notes||'';
+}
+function editProfile(name=null) {
+  editingSatellite=name;profileEditorOpen=true;$('profileEditor').classList.remove('hidden');
+  $('profileEditorTitle').textContent=name?`Edit ${name}`:'Add satellite';$('profileName').value=name||'';$('profileError').textContent='';
+  fillProfile(name?state.settings.satellite_profiles[name]:{});$('profileName').focus();
+}
+$('addSatellite').addEventListener('click',()=>editProfile());
+$('cancelSatellite').addEventListener('click',()=>{profileEditorOpen=false;$('profileEditor').classList.add('hidden');});
+$('profileName').addEventListener('change',()=>{if(!editingSatellite && defaultProfiles[$('profileName').value.trim().toUpperCase()])fillProfile(defaultProfiles[$('profileName').value.trim().toUpperCase()]);});
+$('saveSatellite').addEventListener('click',async()=>{
+  const name=$('profileName').value.trim().toUpperCase();
+  if(!name){$('profileError').textContent='Enter a satellite name or NORAD number.';return;}
+  if(name!==editingSatellite && state.settings.satellites.includes(name)){$('profileError').textContent='That satellite is already in your watch list.';return;}
+  const names=editingSatellite?state.settings.satellites.map(n=>n===editingSatellite?name:n):[...state.settings.satellites,name];
+  const profiles={...state.settings.satellite_profiles};if(editingSatellite)delete profiles[editingSatellite];
+  const p={downlink_mhz:$('profileRx').value===''?null:Number($('profileRx').value),uplink_mhz:$('profileTx').value===''?null:Number($('profileTx').value),downlink_mode:$('profileRxMode').value,uplink_mode:$('profileTxMode').value,notes:$('profileNotes').value,source:(state.settings.satellite_profiles[editingSatellite] || defaultProfiles[name] || {}).source || ''};profiles[name]=p;
+  try{await post('/api/settings',{satellites:names,satellite_profiles:profiles});await refreshState();renderProfiles();profileEditorOpen=false;$('profileEditor').classList.add('hidden');toast(`${name} saved. Live tracking is off.`);}catch(error){$('profileError').textContent=error.message;}
+});
+$('scanPorts').addEventListener('click',()=>refreshPorts());
+$('trackingToggle').addEventListener('click',async()=>{
+  try{await post('/api/tracking',{enabled:!state.hardware.enabled});await refreshState();toast(state.hardware.enabled?'Live tracking enabled.':'Live tracking stopped.');}catch(error){toast(error.message);}
+});
+function expandSky(){if(!$('skyDialog').open)$('skyDialog').showModal();renderTracking();requestAnimationFrame(drawSky);loadWorldLand();}
+$('sky').addEventListener('click',expandSky);$('expandSky').addEventListener('click',expandSky);
+$('sky').addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();expandSky();}});
+$('closeSky').addEventListener('click',()=>$('skyDialog').close());
+$('expandedMapMode').addEventListener('change',()=>{drawSky();if($('expandedMapMode').value==='world')loadWorldLand();});
+
 function enableAudio() {
   try{audioContext ??= new (window.AudioContext || window.webkitAudioContext)();audioContext.resume();browserSound=true;return true;}catch(error){toast('Browser sound is unavailable. Check your audio settings.');return false;}
 }
@@ -256,12 +386,13 @@ $('morePasses').addEventListener('click',()=>{showAll=!showAll;renderTable();});
 $('timeZone').addEventListener('change',()=>{timeZone=$('timeZone').value;localStorage.setItem('satellite-time-zone',timeZone);render();});
 $('settingsForm').addEventListener('submit',async event=>{
   event.preventDefault();const form=event.currentTarget,data={};
+  if(profileEditorOpen){toast('Save or cancel the satellite edit before saving other settings.');return;}
   for(const [key] of Object.entries(state.settings)) {
     const field=form.elements.namedItem(key);if(!field)continue;
-    data[key]=field.type==='checkbox'?field.checked:key==='satellites'?field.value.split(/[\n,]+/).map(name=>name.trim()).filter(Boolean):field.type==='number'?Number(field.value):field.value;
+    data[key]=field.type==='checkbox'?field.checked:field.type==='number'||['rotator_baud','radio_baud','rotator_max_azimuth'].includes(key)?Number(field.value):field.value;
   }
-  const recalculate=Object.keys(data).some(key=>!['earth_overlay','automatic_pause_enabled','automatic_pause_start','automatic_pause_hours'].includes(key) && JSON.stringify(data[key])!==JSON.stringify(state.settings[key]));
-  try{await post('/api/settings',data);if(recalculate){selectedPass=null;selectedName=null;}$('saveStatus').textContent=recalculate?'Saved. Recalculating your passes…':'Settings saved.';toast('Settings saved.');}catch(error){$('saveStatus').textContent=error.message;toast(error.message);}
+  const recalculate=Object.keys(data).some(key=>!['earth_overlay','automatic_pause_enabled','automatic_pause_start','automatic_pause_hours','rotator_enabled','rotator_port','rotator_baud','rotator_max_azimuth','radio_enabled','radio_port','radio_baud','radio_address','radio_step_hz','tracking_minimum_mode'].includes(key) && JSON.stringify(data[key])!==JSON.stringify(state.settings[key]));
+  try{await post('/api/settings',data);if(recalculate){selectedPass=null;selectedName=null;}await refreshState();$('saveStatus').textContent=recalculate?'Saved. Recalculating your passes…':'Settings saved.';toast('Settings saved.');}catch(error){$('saveStatus').textContent=error.message;toast(error.message);}
 });
 $('enableNotifications').addEventListener('click',async()=>{
   if(!('Notification' in window)){toast('This browser does not support notifications.');return;}

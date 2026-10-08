@@ -1,4 +1,4 @@
-# Verification record — 7 October 2026
+# Verification record — 7–8 October 2026
 
 The app was launched on Windows inside Codex using Python 3.12.14.
 The supplied requirements pin the versions used for verification:
@@ -126,3 +126,62 @@ used as the program's live orbital data.
   The screenshot in docs/automatic-pause.jpg shows the restored defaults.
   Coordinates, 100-metre station height, satellite list, 5-minute timing and Earth
   overlay were retained. The monitor is running with manual pause disabled.
+
+## Enlarged Earth, satellite editor and serial tracking — 8 October 2026
+
+- **93 offline Python tests passed on Windows with Python 3.12.14 and 3.14.8**.
+  Both environments passed `pip check`. pySerial 3.5 was added to the pinned
+  runtime requirements. All earlier alert, quiet-hours, startup freshness,
+  geometry and local HTTP tests remain in the suite.
+- **13 offline interface checks passed** with Node.js 22.14.0 and jsdom 26.1.0.
+  They exercise the actual dashboard HTML/JavaScript with simulated HTTP, dialog
+  and canvas APIs: click/keyboard enlargement, all visible markers, moving
+  positions, highest-elevation prominence, both Earth/sky modes, the sole optional
+  image toggle, frequency CRUD, serial settings, master control and paused alerts.
+  These are DOM and drawing-command checks, not browser screenshots or a
+  rendered-layout validation. JavaScript syntax validation also passed.
+- Geographic ground positions reconstruct the propagated orbit within 1 cm in
+  the tested ISS cases. The globe uses WGS84 satellite latitude/longitude and an
+  orthographic projection centred on the observer. An independent formula checks
+  marker placement and confirms that changing longitude moves a marker even
+  when azimuth/elevation are unchanged. Natural Earth land polygons and pinned
+  D3 scripts are bundled locally with licences and source provenance.
+- Line-of-sight velocity was compared with independent finite differences of
+  range at several times. Doppler tests cover approach/recession, zero velocity,
+  sign, magnitude, receive-only profiles and invalid values. Default frequency
+  pairs were checked against AMSAT's current linear/FM tables. Linear defaults
+  are transponder centres, not a single mandatory operating channel.
+- Serial simulators verify GS-232B combined commands, the accumulating 1°
+  deadband on both axes, north wrapping, configured 450° overlap, position
+  replies, a single stop on loss of target and stale-observation suppression.
+  A failed stop closes the connection, reports that the controller needs action
+  and resets software state before another start.
+- CI-V checks cover five-byte BCD, independently signed RX/TX corrections,
+  MAIN/SUB selection, modes, tuning deadband, frequency readback, fragmented
+  frames, echoes, unsolicited broadcasts, rejection/timeout handling and
+  incorrect readback. Device errors stop both controls. Modem-control lines
+  start inactive and no PTT command is sent. Receive-only profiles do not tune
+  SUB. Unsupported frequencies and same-band duplex are rejected.
+- Highest **current** elevation selects one target for both devices, from all
+  watched satellites above the horizon by default. Predicted maximum elevation
+  does not choose the target. Old/stale satellite data cannot drive equipment.
+  Only the latest observation is retained; obsolete pointing commands are not
+  queued. Equipment runs on a separate thread from alert/orbit monitoring.
+- The actual HTTP server was exercised for detected ports, profile CRUD and
+  persistence, equipment settings, the master endpoint, geographic state and
+  locally served map assets. Frequency-only edits preserve orbital predictions.
+  Equipment-affecting changes stop live control. Hardware remains off after
+  restart, and alert-pause controls remain independent of equipment control.
+
+The updated Python monitor was launched in Codex with fresh AMSAT elements.
+Serial enumeration found the PC's Bluetooth virtual ports, but no hardware port
+was selected or opened. **No physical GS-232B or IC-9700 was connected or tested**.
+Acknowledgements/readback in these tests are simulated; motor movement, calibration,
+actual radio state, USB-interface behaviour, reception and audibility need checking
+on the target equipment. The app does not key the transmitter or set CTCSS tones.
+
+Codex's browser-control process failed to start during this update, so a new
+visual interaction/rendering check and screenshot could not be completed. Earlier
+screenshots and layout checks above describe the earlier app version. The new
+automated interface checks do not establish current rendered appearance. The
+local app is available for viewing; refresh the page to load its new interface.
