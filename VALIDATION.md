@@ -353,5 +353,10 @@ controller, a live tracking cycle and the authenticated HTTP endpoint. They now
 produce success with azimuth 183° and elevation 10°, retaining the raw response
 and test time. Live tracking continues rather than setting a rotator error.
 Malformed and out-of-range compact replies remain rejected. **141 Python tests
-passed on Python 3.12.14 and 3.14.8**. The serial regression checks use simulated
-devices; no physical port was opened by the validation suite.
+passed locally on Python 3.12.14**, and the focused rotator suite passed on
+Python 3.14.8. Two local 3.14 full runs encountered the pre-existing Windows
+connection-abort issue in the HTTP denial test; request permission checks were
+unchanged. The [Windows CI run for the parser fix](https://github.com/uham999/SatelliteAlert/actions/runs/37777371108)
+passed the full suite on both Python 3.12 and 3.14, plus all 30 DOM checks and
+the launcher checks. The serial regression checks use simulated devices; no
+physical port was opened by the validation suite.
