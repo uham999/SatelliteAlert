@@ -56,6 +56,8 @@ async function dashboard(t, changes={}) {
     } else if(url==='/api/tracking'){
       if(body.enabled && (!server.settings.rotator_port || !server.settings.radio_port)){ok=false;result={error:'Select an available serial port in Settings, then save.'};}
       else{server.hardware.enabled=body.enabled;result={ok:true};}
+    } else if(url==='/api/test-alert'){
+      server.sound_serial++;server.alerts=[{id:'test-audio',name:'TEST',test:true,active:true,acknowledged:false,created_at:now,message:'TEST ALERT'}];result={ok:true};
     } else if(url==='/api/pause'){server.paused=body.paused;server.pause_reason=body.paused?'manual':null;result={ok:true};}
     else throw new Error(`Unexpected test request: ${url}`);
     return {ok,json:async()=>clone(result)};
@@ -193,4 +195,48 @@ test('empty sky shows a useful status without fabricating a satellite marker',as
   const { $,server,paint,refresh }=await dashboard(t);for(const s of server.satellites)s.elevation=-10;paint.length=0;await refresh();
   assert.match($('liveTarget').textContent,/No watched satellite/);assert.match($('expandedSummary').textContent,/0 watched satellites/);
   assert.ok(!paint.some(p=>p.op==='arc' && p.args[2]===11));
+});
+
+function fakeAudio(w,blocked=false) {
+  const recordings={resumes:0,tones:[]};
+  w.AudioContext=class {
+    constructor(){this.state='suspended';this.currentTime=0;this.destination={};}
+    async resume(){recordings.resumes++;if(blocked)throw new Error('Autoplay blocked');this.state='running';}
+    createGain(){return {gain:{setValueAtTime(){},linearRampToValueAtTime(){},exponentialRampToValueAtTime(){}},connect(){}};}
+    createOscillator(){const oscillator={frequency:{value:0},connect(){},start(){recordings.tones.push(oscillator.frequency.value);},stop(){}};return oscillator;}
+  };
+  return recordings;
+}
+
+test('browser audio stays available on Windows and Test alert activates and plays it',async t=>{
+  const { $,w,server,refresh }=await dashboard(t);server.native_sound=true;server.sound_status='Windows WAV playback completed';await refresh();
+  assert.ok(!$('enableSound').classList.contains('hidden'));
+  const sounds=fakeAudio(w);$('testAlert').click();await flush();
+  assert.equal(sounds.resumes,1);assert.deepEqual(sounds.tones,[660,880,1100,880]);
+  assert.match($('soundStatus').textContent,/Browser sound enabled/);assert.ok($('enableSound').classList.contains('hidden'));
+});
+
+test('real alerts sound through the enabled browser even when Windows reports success; pause and acknowledgement suppress them',async t=>{
+  const { $,w,server,refresh }=await dashboard(t);server.native_sound=true;await refresh();
+  const sounds=fakeAudio(w);$('enableSound').click();await flush();sounds.tones.length=0;
+  server.alerts=[{id:'real',name:'ISS',test:false,active:true,acknowledged:false,created_at:server.now,message:'ISS approaching'}];
+  server.sound_serial++;await refresh();assert.equal(sounds.tones.length,4);
+  await refresh();assert.equal(sounds.tones.length,4);
+  server.paused=true;server.sound_serial++;await refresh();assert.equal(sounds.tones.length,4);
+  server.paused=false;server.alerts[0].active=false;server.alerts[0].acknowledged=true;server.sound_serial++;await refresh();assert.equal(sounds.tones.length,4);
+  server.alerts[0].active=true;server.alerts[0].acknowledged=false;server.sound_serial=0;await refresh();assert.equal(sounds.tones.length,4);
+});
+
+test('browser audio denial is reported and its enable button remains available',async t=>{
+  const { $,w }=await dashboard(t);const sounds=fakeAudio(w,true);
+  $('testAlert').click();await flush();assert.equal(sounds.tones.length,0);
+  assert.match($('toast').textContent,/Browser audio is blocked/);
+  assert.ok(!$('enableSound').classList.contains('hidden'));assert.doesNotMatch($('soundStatus').textContent,/Browser sound enabled/);
+});
+
+test('test alerts can check browser sound while paused, and disabled sound settings suppress the alert chime',async t=>{
+  const { $,w,server,refresh }=await dashboard(t);const sounds=fakeAudio(w);
+  server.paused=true;await refresh();$('testAlert').click();await flush();assert.equal(sounds.tones.length,4);
+  server.settings.sound_enabled=false;await refresh();$('testAlert').click();await flush();assert.equal(sounds.tones.length,4);
+  assert.match($('toast').textContent,/Sound is disabled/);
 });

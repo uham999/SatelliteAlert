@@ -102,9 +102,10 @@ python3 -m venv .venv
 ```
 
 On these systems, keep the browser dashboard open and click **Enable browser
-sound**. Browser audio requires that click after each tab is opened. Background
-tab throttling can delay browser-only sound; Windows uses Python's native audio
-and popup independently of the browser.
+sound** or **Test alert**. Browser audio requires a button click after each tab
+is opened or reloaded. Background tab throttling can delay browser-only sound;
+Windows plays a bundled WAV chime through Python independently of the browser.
+Browser sound is also available on Windows as an additional sound source.
 
 ## Alerts and the 35° angle
 
@@ -147,7 +148,10 @@ A real alert gives you:
 
 **Test alert** is clearly labelled TEST. It plays the chime and shows the dashboard
 banner for up to 60 seconds, without opening a Windows popup. Acknowledging silences
-it immediately. A paused app still permits an explicitly requested test.
+it immediately. A paused app still permits an explicitly requested test. The button
+also enables browser audio for that tab, including on Windows. The dashboard reports
+when the browser blocks audio instead of claiming that sound is enabled. The
+**Play an audible alert** setting still controls both alert sound sources.
 
 The Python monitor checks every **2 seconds**. It alerts once per satellite pass,
 including a pass already underway at startup/resume. In early mode, starting
@@ -401,9 +405,16 @@ Run the verification suite with:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-No sound: check mute/volume and Test alert. If the Windows audio API fails, the
-dashboard offers browser sound as a fallback. If a popup is already open, close
-it with OK. No data: check the internet connection and the diagnostic log; use
+No sound: reload the dashboard and press **Test alert**. Windows uses the bundled
+`static/alert-chime.wav` through
+[Python's WAV playback API](https://docs.python.org/3/library/winsound.html).
+**Enable browser sound** is available even when Windows reports successful
+playback; Test alert enables it too. Check that **Play an audible alert** is enabled
+in Settings, the browser tab is not muted, and Windows Volume Mixer has the correct
+speaker or headphone output and both Python and the browser unmuted. A successful
+playback status confirms that the API accepted the file, not that the speakers
+were audible. If a popup is already open, close it with OK.
+No data: check the internet connection and the diagnostic log; use
 Refresh orbital data. A disconnected dashboard means the Python process is
 stopped or unreachable. Check the terminal before restarting. An invalid manually
 edited `settings.json` is reported at startup; correct it or rename it to retain
@@ -422,7 +433,7 @@ on that computer before relying on it.
 
 See [VALIDATION.md](VALIDATION.md) for the full verification record and limits.
 The GitHub Actions workflow runs the offline suite on Windows with Python 3.12
-and 3.14 for pushes and pull requests. It also runs **13 offline dashboard DOM
+and 3.14 for pushes and pull requests. It also runs **17 offline dashboard DOM
 checks** using Node.js and jsdom. Maintainers can run these with `npm ci` followed
 by `npm test` (Node.js 18 or later). Node.js is not required to run the program;
 the map scripts are already bundled. These DOM checks do not replace visual

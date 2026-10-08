@@ -51,7 +51,7 @@ class DashboardServerTests(unittest.TestCase):
         return result
 
     def test_dashboard_assets_and_live_state(self):
-        for path in ("/", "/app.js", "/style.css", "/api/health", "/d3-array.min.js", "/d3-geo.min.js", "/world-land.json"):
+        for path in ("/", "/app.js", "/style.css", "/api/health", "/d3-array.min.js", "/d3-geo.min.js", "/world-land.json", "/alert-chime.wav"):
             with self.subTest(path=path):
                 status, body, _ = self.request("GET", path)
                 self.assertEqual(status, 200)
@@ -65,6 +65,10 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("ground_latitude", value["satellites"][0])
         self.assertIn("ground_longitude", value["satellites"][0])
         self.assertIn("range_rate_km_s", value["satellites"][0])
+        status, body, headers = self.request("GET", "/alert-chime.wav")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "audio/wav")
+        self.assertTrue(body.startswith(b"RIFF"))
 
     def test_automatic_pause_settings_and_manual_resume_via_http(self):
         generation = self.monitor.generation

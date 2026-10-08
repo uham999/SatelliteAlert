@@ -211,3 +211,29 @@ local app is available for viewing; refresh the page to load its new interface.
   Its previously saved radio baud of 9600 was preserved; rotator baud remains
   9600. Coordinates, height and satellite preferences were retained. Live
   tracking remains off and no physical serial port was opened.
+
+## Audible alert repair — 8 October 2026
+
+- Sound was enabled and the running monitor was not paused. The browser hid its
+  sound control whenever Windows was detected and suppressed its chime whenever
+  the native sound path reported success. That prevented browser audio from
+  helping when the Windows beep was inaudible.
+- Windows now plays an original bundled 1.8-second PCM WAV through `PlaySound`
+  on the sound thread. A lock prevents overlapping native playback. Browser sound
+  stays available on Windows, and Test alert resumes and verifies its audio
+  context before claiming that it is enabled. Repeated, paused, acknowledged and
+  disabled alerts retain their sound suppression rules; manually requested tests
+  are allowed while paused. A reset sound counter after restart does not cause a
+  spurious browser chime.
+- **99 Python tests passed on Python 3.12.14 and 3.14.8**, and **17 offline DOM
+  checks passed**. New checks cover the WAV format, nonzero unclipped samples,
+  native filename/flags, failed playback and overlapping calls, plus browser
+  activation on Windows, blocked audio, real alerts, repeats, pause and sound
+  settings. The local HTTP server serves the WAV with `audio/wav` content type.
+- These tests use a mocked Windows audio API and a simulated browser audio
+  context. They establish software behaviour, not physical speaker audibility.
+  The updated local preview was restarted with tracking off. After reloading the
+  dashboard and pressing Test alert, the user confirmed the chime was audible on
+  this machine. The native API also reported completed WAV playback. This does
+  not establish speaker settings on a different computer. Saved radio/rotator
+  settings were preserved; no serial port was opened.

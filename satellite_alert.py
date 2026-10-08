@@ -66,7 +66,7 @@ class SoundPlayer:
     """Windows audio works even when the browser tab is in the background."""
     def __init__(self):
         self.windows = sys.platform == "win32"
-        self.status = "Windows speaker" if self.windows else "Enable browser sound in the dashboard"
+        self.status = "Windows WAV audio · use Test alert to check" if self.windows else "Enable browser sound in the dashboard"
         self.busy = threading.Lock()
 
     def play(self):
@@ -76,10 +76,8 @@ class SoundPlayer:
         def run():
             try:
                 import winsound
-                for frequency in (660, 880, 1100, 880):
-                    winsound.Beep(frequency, 230)
-                    time.sleep(0.06)
-                self.status = "Windows chime played"
+                winsound.PlaySound(str(ROOT / "static" / "alert-chime.wav"), winsound.SND_FILENAME | winsound.SND_NODEFAULT)
+                self.status = "Windows WAV playback completed"
             except Exception as error:
                 self.status = f"Windows sound failed: {error}. Enable browser sound."
                 LOG.exception("Unable to play Windows sound")
@@ -568,7 +566,8 @@ class Handler(BaseHTTPRequestHandler):
         files = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"), "/style.css": ("style.css", "text/css"),
                  "/earth-overlay.png": ("earth-overlay.png", "image/png"),
                  "/d3-array.min.js": ("d3-array.min.js", "text/javascript"), "/d3-geo.min.js": ("d3-geo.min.js", "text/javascript"),
-                 "/world-land.json": ("world-land.json", "application/json")}
+                 "/world-land.json": ("world-land.json", "application/json"),
+                 "/alert-chime.wav": ("alert-chime.wav", "audio/wav")}
         if path in files:
             name, content_type = files[path]
             if content_type.startswith("text/"):

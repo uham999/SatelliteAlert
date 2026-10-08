@@ -158,7 +158,7 @@ function renderAlerts() {
       }
     }
   }
-  if(soundSerial!==null && state.sound_serial!==soundSerial && (!state.paused || active.some(alert=>alert.test)) && browserSound && state.settings.sound_enabled && (!state.native_sound || state.sound_status.includes('failed'))) chime();
+  if(soundSerial!==null && state.sound_serial>soundSerial && active.length && (!state.paused || active.some(alert=>alert.test)) && browserSound && state.settings.sound_enabled) chime();
   soundSerial=state.sound_serial;
   $('history').innerHTML=state.alerts.length ? state.alerts.map(alert=>`<div class="history-item"><div><strong>${esc(alert.test?'TEST ALERT':alert.name)}</strong> <span class="tag">${alert.acknowledged?'ACKNOWLEDGED':alert.active?'ACTIVE':'ENDED'}</span><p>${esc(alert.message)}</p></div><time>${formatTime(alert.created_at,true,true)}</time></div>`).join('') : '<p class="empty">No alerts yet. Use Test alert to check the banner and chime.</p>';
 }
@@ -186,8 +186,8 @@ function renderStatus() {
   $('stationLon').textContent=`${Math.abs(s.longitude).toFixed(3)}° ${s.longitude>=0?'E':'W'}`;
   $('dataStatus').textContent=state.fetched_at ? `AMSAT · downloaded ${formatTime(state.fetched_at,false,true)}` : 'Waiting for first successful download.';
   $('refreshStatus').textContent=`${formatTime(state.next_refresh_at,false,true)} · every ${s.refresh_hours} hours`;
-  $('soundStatus').textContent=s.sound_enabled ? (browserSound && !state.native_sound ? 'Browser chime enabled' : state.sound_status) : 'Sound disabled in Settings';
-  $('enableSound').classList.toggle('hidden',state.native_sound && !state.sound_status.includes('failed') || browserSound);
+  $('soundStatus').textContent=s.sound_enabled ? (browserSound ? `Browser sound enabled${state.native_sound?' · Windows WAV backup':''}` : `${state.sound_status}${state.native_sound?' · browser sound available below':''}`) : 'Sound disabled in Settings';
+  $('enableSound').classList.toggle('hidden',browserSound);
 }
 function render() {renderStatus();renderNext();renderFleet();renderTable();renderAlerts();renderTracking();}
 async function refreshState() {
@@ -358,21 +358,26 @@ $('sky').addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===
 $('closeSky').addEventListener('click',()=>$('skyDialog').close());
 $('expandedMapMode').addEventListener('change',()=>{drawSky();if($('expandedMapMode').value==='world')loadWorldLand();});
 
-function enableAudio() {
-  try{audioContext ??= new (window.AudioContext || window.webkitAudioContext)();audioContext.resume();browserSound=true;return true;}catch(error){toast('Browser sound is unavailable. Check your audio settings.');return false;}
+async function enableAudio() {
+  try {
+    if(!audioContext || audioContext.state==='closed')audioContext=new (window.AudioContext || window.webkitAudioContext)();
+    await audioContext.resume();
+    if(audioContext.state!=='running')throw new Error('Audio is suspended.');
+    browserSound=true;return true;
+  } catch(error){browserSound=false;toast('Browser sound is blocked or unavailable. Check tab mute and your audio output, then click Enable browser sound.');return false;}
 }
 function chime() {
-  if(!audioContext) return;
-  audioContext.resume();const now=audioContext.currentTime;
+  if(!audioContext || audioContext.state!=='running') {browserSound=false;if(state)renderStatus();return;}
+  const now=audioContext.currentTime;
   [660,880,1100,880].forEach((frequency,index)=>{
     const oscillator=audioContext.createOscillator(),gain=audioContext.createGain(),start=now+index*.29;
-    oscillator.frequency.value=frequency;oscillator.type='sine';gain.gain.setValueAtTime(0,start);gain.gain.linearRampToValueAtTime(.15,start+.025);gain.gain.exponentialRampToValueAtTime(.001,start+.23);
+    oscillator.frequency.value=frequency;oscillator.type='sine';gain.gain.setValueAtTime(0,start);gain.gain.linearRampToValueAtTime(.25,start+.025);gain.gain.exponentialRampToValueAtTime(.001,start+.23);
     oscillator.connect(gain);gain.connect(audioContext.destination);oscillator.start(start);oscillator.stop(start+.25);
   });
 }
-$('enableSound').addEventListener('click',()=>{if(enableAudio()){chime();renderStatus();toast('Browser sound enabled for this tab.');}});
+$('enableSound').addEventListener('click',async()=>{if(await enableAudio()){chime();renderStatus();toast('Browser sound enabled for this tab.');}});
 $('testAlert').addEventListener('click',async()=>{
-  try{if(state && (!state.native_sound || state.sound_status.includes('failed')))enableAudio();await post('/api/test-alert');toast('Test alert triggered. It expires after 60 seconds.');}catch(error){toast(error.message);}
+  try{const ready=await enableAudio();await post('/api/test-alert');await refreshState();toast(!state.settings.sound_enabled?'Test banner triggered. Sound is disabled in Settings.':ready?'Test alert triggered. Browser sound enabled; it expires after 60 seconds.':'Test alert requested. Browser audio is blocked; check tab mute/output and click Enable browser sound.');}catch(error){toast(error.message);}
 });
 $('acknowledge').addEventListener('click',async()=>{try{await post('/api/acknowledge');toast('Acknowledged. This pass will stay silent.');}catch(error){toast(error.message);}});
 $('refresh').addEventListener('click',async()=>{try{await post('/api/refresh');toast('Downloading the latest AMSAT orbital elements…');}catch(error){toast(error.message);}});
