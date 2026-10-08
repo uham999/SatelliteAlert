@@ -399,6 +399,18 @@ class MonitorTests(unittest.TestCase):
         restarted = Monitor(self.root, clock=lambda: self.now, fetcher=lambda: FIXTURE)
         self.assertFalse(restarted.settings["earth_overlay"])
 
+    def test_maximum_volume_setting_preserves_pending_alerts_and_predictions(self):
+        pass_ = self.prepared()
+        self.now = pass_.peak_time;self.monitor.tick()
+        generation = self.monitor.generation
+        self.monitor.save_settings({'windows_maximum_volume': False})
+        self.assertEqual(self.monitor.generation, generation)
+        self.assertFalse(self.monitor.alerts[0]['acknowledged'])
+        self.assertTrue(self.monitor.snapshot()['alerts'][0]['active'])
+        self.assertFalse(read_settings(self.root)['windows_maximum_volume'])
+        with self.assertRaises(ValueError):
+            self.monitor.save_settings({'windows_maximum_volume': 'yes'})
+
     def test_startup_resume_and_completed_pass(self):
         pass_ = self.prepared()
         self.monitor.toggle_pause(True)

@@ -10,6 +10,9 @@ from serial.tools import list_ports
 
 from profiles import MODES
 
+RADIO_TEST_FREQUENCIES = (145_000_000, 145_555_000)
+RADIO_TEST_INTERVAL = 2.0
+
 
 def available_ports():
     return [dict(device=p.device, description=p.description) for p in sorted(list_ports.comports())]
@@ -77,12 +80,17 @@ class HardwareController:
         self.wake, self.stop = threading.Event(), threading.Event()
         self.thread = None
         self.enabled = False  # Never resume hardware motion automatically on process restart.
+        self.radio_test_enabled = False
+        self.generation, self.io_generation, self.connection_generation = 0, None, None
+        self.radio_test_ready, self.radio_test_index, self.next_radio_test_at = False, 0, None
         self.settings, self.target, self.offered_at = None, None, None
         self.rotator, self.radio = None, None
         self.last_direction, self.last_radio = None, None
         self.last_position_query = None
+        self.rotator_fault = None
         self.moving = False
-        self.state = dict(enabled=False, error=None, target=None, rotator_status="Off", radio_status="Off",
+        self.state = dict(enabled=False, radio_test_enabled=False, radio_test_frequency_hz=None, radio_test_updates=0,
+                          error=None, rotator_error=None, target=None, rotator_status="Off", radio_status="Off",
                           rotator_position=None, commanded_position=None, radio_rx_hz=None, radio_tx_hz=None,
                           direction_updates=0, frequency_updates=0)
 
@@ -108,14 +116,36 @@ class HardwareController:
                 if settings[device + "_enabled"] and settings[device + "_port"] not in available:
                     raise ValueError(f"Select an available {device} serial port in Settings, then save.")
         with self.lock:
+            if enabled and self.radio_test_enabled:
+                raise ValueError("Stop the radio connection test before starting live tracking.")
             self.enabled = enabled
+            self.radio_test_enabled = False
+            self.generation += 1
             self.settings = deepcopy(settings)
-            self.state.update(enabled=enabled, error=None)
+            self.state.update(enabled=enabled, radio_test_enabled=False, radio_test_frequency_hz=None, error=None, rotator_error=None)
             if enabled:
                 self.state.update(rotator_status="Connecting" if settings["rotator_enabled"] else "Not enabled",
                                   radio_status="Connecting" if settings["radio_enabled"] else "Not enabled")
             else:
                 self.state.update(rotator_status="Off", radio_status="Off")
+        self.wake.set()
+
+    def set_radio_test(self, enabled, settings):
+        if not isinstance(enabled, bool):
+            raise ValueError("Radio connection test must be true or false.")
+        if enabled and settings["radio_port"] not in {p["device"] for p in self.ports_provider()}:
+            raise ValueError("Select an available radio serial port in Settings, then save.")
+        with self.lock:
+            if enabled == self.radio_test_enabled:
+                return
+            self.enabled = False
+            self.radio_test_enabled = enabled
+            self.generation += 1
+            self.settings = deepcopy(settings)
+            self.state.update(enabled=False, radio_test_enabled=enabled, radio_test_frequency_hz=None,
+                              error=None, rotator_error=None, rotator_status="Off", radio_status="Connecting for test" if enabled else "Off")
+            if enabled:
+                self.state.update(radio_rx_hz=None, radio_tx_hz=None, radio_test_updates=0)
         self.wake.set()
 
     def snapshot(self):
@@ -128,7 +158,7 @@ class HardwareController:
 
     def _check_enabled(self):
         with self.lock:
-            if not self.enabled or self.stop.is_set():
+            if not (self.enabled or self.radio_test_enabled) or self.stop.is_set() or self.io_generation != self.generation:
                 raise TrackingStopped()
 
     def _open(self, port, baud):
@@ -211,6 +241,7 @@ class HardwareController:
         deadline = self.monotonic() + 0.8
         reply = bytearray()
         while self.monotonic() < deadline and len(reply) < 256:
+            self._check_enabled()
             reply.extend(self.rotator.read_until(b"\r", 128))
             try:
                 position = parse_rotator_position(bytes(reply))
@@ -268,11 +299,61 @@ class HardwareController:
                     radio_tx_hz=verified_tx if tx is not None else None,
                     frequency_updates=self.snapshot()["frequency_updates"] + 1)
 
+    def _test_radio(self, settings):
+        if self.radio is None:
+            self._check_enabled()
+            self.radio = self._open(settings["radio_port"], settings["radio_baud"])
+        if not self.radio_test_ready:
+            self._civ(0x16, b"\x5a\x00")  # Test the MAIN VFO independently of satellite mode.
+            self._civ(0x07)
+            self._civ(0x07, b"\xd0")
+            main_hz = decode_frequency(self._civ(0x03, reply_command=0x03))
+            if radio_band(main_hz) != 0:
+                self._civ(0x07, b"\xd1")
+                sub_hz = decode_frequency(self._civ(0x03, reply_command=0x03))
+                self._civ(0x07, b"\xd0")
+                if radio_band(sub_hz) == 0:
+                    # The IC-9700 cannot use 144 MHz on MAIN and SUB together.
+                    self._civ(0x07, b"\xb0")
+            self.radio_test_ready = True
+        sent_at = self.monotonic()
+        if self.next_radio_test_at is not None and sent_at < self.next_radio_test_at:
+            return
+        hz = RADIO_TEST_FREQUENCIES[self.radio_test_index]
+        self._civ(0x05, frequency_bcd(hz))
+        verified = decode_frequency(self._civ(0x03, reply_command=0x03))
+        if abs(verified - hz) > 1:
+            raise OSError("Radio connection test frequency readback differs. Turn AFC off and avoid manual tuning during the test.")
+        self._check_enabled()
+        self.radio_test_index = (self.radio_test_index + 1) % len(RADIO_TEST_FREQUENCIES)
+        # Orbit updates can wake the worker early; only send a tune when it is due.
+        # Schedule from the write, so acknowledgement time does not extend each interval.
+        self.next_radio_test_at = sent_at + RADIO_TEST_INTERVAL
+        self._state(radio_status="Connection test · frequency verified", radio_rx_hz=verified, radio_tx_hz=None,
+                    radio_test_frequency_hz=verified, radio_test_updates=self.snapshot()["radio_test_updates"] + 1)
+
     def _halt_rotator(self):
         if self.rotator and self.moving:
             self._write(self.rotator, b"S\r")
         self.moving = False
         self.last_direction = None
+
+    def _stop_rotator_after_error(self, error):
+        message = str(error)
+        try:
+            self._halt_rotator()
+        except Exception as failure:
+            message += f" Could not send rotator stop: {failure}. Stop it at the controller."
+        finally:
+            if self.rotator:
+                try:
+                    self.rotator.close()
+                except Exception:
+                    pass
+            self.rotator = None
+            self.moving, self.last_direction, self.last_position_query = False, None, None
+        self.rotator_fault = message
+        self._state(rotator_error=message, rotator_status="Stopped after error")
 
     def _shutdown(self):
         error = None
@@ -288,6 +369,9 @@ class HardwareController:
                     pass
         self.rotator, self.radio, self.last_radio, self.last_position_query = None, None, None, None
         self.moving, self.last_direction = False, None
+        self.connection_generation = None
+        self.rotator_fault = None
+        self.radio_test_ready, self.radio_test_index, self.next_radio_test_at = False, 0, None
         if error:
             self._state(error=error)
 
@@ -295,37 +379,62 @@ class HardwareController:
         with self.io_lock:
             with self.lock:
                 enabled, target, settings, offered = self.enabled, deepcopy(self.target), deepcopy(self.settings), self.offered_at
-            if not enabled:
+                radio_test_enabled, generation = self.radio_test_enabled, self.generation
+            if not enabled and not radio_test_enabled:
                 self._shutdown()
                 return
             try:
-                for device in ("rotator", "radio"):
-                    if settings[device + "_enabled"] and getattr(self, device) is None:
-                        self._check_enabled()
-                        setattr(self, device, self._open(settings[device + "_port"], settings[device + "_baud"]))
-                if self.rotator and (self.last_position_query is None or self.monotonic() - self.last_position_query >= 5):
-                    self._query_position()
-                if offered is None or self.monotonic() - offered > 6 or target is None:
-                    self._halt_rotator()
-                    self.last_radio = None
-                    self._state(rotator_status="Waiting for a fresh in-range satellite" if self.rotator else "Not enabled",
-                                radio_status="Waiting for a fresh in-range satellite" if self.radio else "Not enabled")
+                self.io_generation = generation
+                if self.connection_generation != generation:
+                    self._shutdown()
+                    self.connection_generation = generation
+                if radio_test_enabled:
+                    self._test_radio(settings)
                     return
-                if self.rotator:
-                    self._point(target, settings)
+                if settings["rotator_enabled"] and not self.rotator_fault:
+                    try:
+                        if self.rotator is None:
+                            self._check_enabled()
+                            self.rotator = self._open(settings["rotator_port"], settings["rotator_baud"])
+                        if self.last_position_query is None or self.monotonic() - self.last_position_query >= 5:
+                            self._query_position()
+                        if offered is not None and self.monotonic() - offered <= 6 and target is not None:
+                            self._point(target, settings)
+                        else:
+                            self._halt_rotator()
+                            self._state(rotator_status="Waiting for a fresh in-range satellite")
+                    except TrackingStopped:
+                        raise
+                    except Exception as error:
+                        self._check_enabled()
+                        self._stop_rotator_after_error(error)
+                        if not settings["radio_enabled"]:
+                            raise
+                if settings["radio_enabled"]:
+                    if self.radio is None:
+                        self._check_enabled()
+                        self.radio = self._open(settings["radio_port"], settings["radio_baud"])
+                if offered is None or self.monotonic() - offered > 6 or target is None:
+                    self.last_radio = None
+                    self._state(radio_status="Waiting for a fresh in-range satellite" if self.radio else "Not enabled")
+                    return
                 if self.radio:
                     self._tune(target, settings)
             except TrackingStopped:
                 self._shutdown()
             except Exception as error:
                 with self.lock:
-                    self.enabled = False
-                    self.state.update(enabled=False, error=str(error), rotator_status="Stopped after error", radio_status="Stopped after error")
+                    if self.generation == generation:
+                        self.enabled = self.radio_test_enabled = False
+                        self.generation += 1
+                        self.state.update(enabled=False, radio_test_enabled=False, radio_test_frequency_hz=None,
+                                          error=str(error), rotator_status="Stopped after error", radio_status="Stopped after error")
                 self._shutdown()
 
     def _run(self):
         while not self.stop.is_set():
-            self.wake.wait(2)
+            wait_seconds = min(2, max(0, self.next_radio_test_at - self.monotonic())) if self.radio_test_enabled and self.next_radio_test_at is not None else 2
+            self.wake.wait(wait_seconds)
             self.wake.clear()
             self.step()
         with self.io_lock:
@@ -333,8 +442,9 @@ class HardwareController:
 
     def close(self):
         with self.lock:
-            self.enabled = False
-            self.state["enabled"] = False
+            self.enabled = self.radio_test_enabled = False
+            self.generation += 1
+            self.state.update(enabled=False, radio_test_enabled=False, radio_test_frequency_hz=None)
         self.stop.set()
         self.wake.set()
         if self.thread:

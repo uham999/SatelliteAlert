@@ -20,6 +20,8 @@ Click the Earth to open a large, live **Earth map or local sky view**. All watch
 satellites above the horizon appear, with the highest current elevation in gold.
 Optional serial control points a **Yaesu GS-232B** rotator and independently
 Doppler-tunes an **Icom IC-9700**. A main-page button starts and stops both.
+**Test radio connection** alternates two VHF frequencies with a yellow progress
+label. A failed rotator position reply leaves the radio's Doppler tuning running.
 Settings provides a satellite editor with separate downlink/uplink frequencies,
 modes and notes, plus detected COM ports and serial parameters.
 
@@ -142,7 +144,8 @@ A real alert gives you:
 - A Windows chime, repeated every 30 seconds until acknowledged or the useful
   window ends. You can change/disable the sound in Settings.
 - A Windows popup, enabled by default, that can appear over other applications.
-  Pressing OK acknowledges that alert. You can disable the popup in Settings.
+  Press OK to close the message, then acknowledge the alert in the app. You can
+  disable the popup in Settings.
 - Optional browser desktop notifications, enabled by your button click and your
   browser's permission decision. They are additional to the Windows popup.
 
@@ -152,6 +155,23 @@ it immediately. A paused app still permits an explicitly requested test. The but
 also enables browser audio for that tab, including on Windows. The dashboard reports
 when the browser blocks audio instead of claiming that sound is enabled. The
 **Play an audible alert** setting still controls both alert sound sources.
+
+Real alerts stay in the app banner until you press **Acknowledge & silence**,
+including after closing a Windows message, pausing alerts or the pass ending.
+The banner appears above every app page. **Alert history** also has an
+**Acknowledge** button for each unacknowledged entry. Clicking a browser desktop
+notification opens the live dashboard. An expired alert remains available to
+acknowledge, but its chime and notifications stop when its useful window ends.
+
+**Set Windows volume to 100% before the chime** is enabled by default in
+Settings. Immediately before native playback, the app sets the default
+multimedia playback device to maximum, unmutes it and checks the readback using
+[Windows Core Audio](https://learn.microsoft.com/en-us/windows/win32/api/endpointvolume/nf-endpointvolume-iaudioendpointvolume-setmastervolumelevelscalar).
+This applies to real alerts, repeat chimes and Test alert. The device remains at
+100% until you change its volume. Disable the setting to use your current volume;
+changing this setting does not acknowledge alerts or recalculate passes. If the
+device cannot be controlled, the chime still plays at the current volume and the
+sound status reports the volume error. No additional Python library is needed.
 
 The Python monitor checks every **2 seconds**. It alerts once per satellite pass,
 including a pass already underway at startup/resume. In early mode, starting
@@ -172,8 +192,9 @@ next start time.
 The schedule follows the **computer running Python's local clock**, even if you
 choose UTC for the pass table. It uses local clock hours, so midnight to 7am still
 ends at 7am when daylight-saving changes the clock. Positions, forecasts and
-orbital downloads continue during both automatic and manual pauses. Real alert
-banners, notifications, new alerts and repeat chimes are suppressed; an explicit
+orbital downloads continue during both automatic and manual pauses. Notifications,
+new alerts and repeat chimes are suppressed; existing messages stay available to
+acknowledge in the app. An explicit
 **Test alert** remains available. An already open Windows popup is not closed.
 
 Whenever either kind of pause applies, the dashboard displays:
@@ -214,6 +235,8 @@ The optional image behind the compact/local sky view is decorative. The geograph
 Earth view uses bundled Natural Earth coastlines, so it works without a map
 service or an internet connection after orbital elements have been downloaded.
 Use **Close expanded view** or Escape to return to the dashboard.
+The expanded Earth uses darker green land and coastlines, with a white outline
+and label background keeping the purple ground station visible.
 
 ## Rotator and IC-9700 setup
 
@@ -229,7 +252,7 @@ connections. You can enable the radio, rotator, or both in Settings.
    to the enabled rotator. In Settings, use **Refresh available serial ports**, select
    the detected port for each enabled device, and save. The two enabled devices
    need different ports. The app lists ports without opening them; no equipment
-   is commanded until you start live tracking. Close other software using those
+   is commanded until you start live tracking or a radio connection test. Close other software using those
    ports first.
 2. For the **GS-232B**, the default is **9600 baud, 8N1**. Match the controller's
    baud rate and azimuth travel configuration. Travel defaults to **360°**; choose
@@ -267,11 +290,38 @@ Changing equipment, location, tracking criteria or satellite profiles stops live
 control so you can restart after reviewing the changes.
 
 Losing the target stops the rotator and waits for the next satellite. Observations
-older than 6 seconds are rejected. Serial errors, missing replies, radio command
-rejections and incorrect frequency readback stop live control and display an
-error. It stays off until you correct the issue and start it again. If the
+older than 6 seconds are rejected. A **rotator error**, including no valid **C2**
+position reply, stops and disconnects the rotator while the enabled radio
+continues updating both downlink and uplink for the selected satellite. The
+equipment panel displays the separate rotator error. It does not repeatedly
+reopen the failed port; **Stop live tracking**, then **Start live tracking** to
+retry it. With only the rotator enabled, that failure stops live control.
+Radio errors, command rejections and incorrect frequency readback stop live
+control and display an error. It stays off until you correct the issue and start
+it again. If the
 connection is lost, the app cannot guarantee delivery of the stop command; a
 failed stop is reported for action at the controller.
+
+## Test the radio connection
+
+Press **Test radio connection** on the live monitor. It uses the saved radio
+COM port, baud and CI-V address, selects the MAIN VFO and alternates
+**145.000 MHz** and **145.555 MHz** every **2 seconds**. If VHF is currently on
+SUB, it exchanges the bands onto MAIN before tuning. Each change requires a
+CI-V acknowledgement and matching frequency readback.
+
+The button changes to **Stop test radio connection** and a yellow label shows
+**Radio connection test in progress**, including the confirmed MAIN frequency.
+Press the button again to stop and close the port; the radio stays at its last
+test frequency. Missing replies, rejected commands and incorrect readback stop
+the test and display the error.
+
+The test works without a visible satellite, independently of alert pauses and
+the radio's live-tracking enable checkbox. Starting it stops live tracking and
+the rotator. Stop the test before starting live tracking again. No PTT or
+memory-write command is sent. The Python process runs the timing, so closing
+the browser does not stop it; restarting the program always starts with both
+the test and live tracking off.
 
 ## Satellite frequencies and Doppler correction
 
@@ -381,6 +431,7 @@ Stop with **How it works → Stop app**, or Ctrl+C in the program's terminal.
 - `orbits.py`: TLE validation, satellite identities and orbital calculations.
 - `hardware.py`: GS-232B pointing and acknowledged/read-back CI-V tuning.
 - `profiles.py`: editable satellite frequency defaults and Doppler calculation.
+- `windows_audio.py`: native Windows playback-volume control and readback.
 - `static/`: self-contained dashboard; no internet fonts/scripts are loaded.
 - `settings.json`: editable settings, also editable through the dashboard.
 - `settings.example.json`: starting settings; the app also creates defaults
@@ -433,7 +484,7 @@ on that computer before relying on it.
 
 See [VALIDATION.md](VALIDATION.md) for the full verification record and limits.
 The GitHub Actions workflow runs the offline suite on Windows with Python 3.12
-and 3.14 for pushes and pull requests. It also runs **17 offline dashboard DOM
+and 3.14 for pushes and pull requests. It also runs **25 offline dashboard DOM
 checks** using Node.js and jsdom. Maintainers can run these with `npm ci` followed
 by `npm test` (Node.js 18 or later). Node.js is not required to run the program;
 the map scripts are already bundled. These DOM checks do not replace visual

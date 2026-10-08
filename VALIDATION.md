@@ -237,3 +237,52 @@ local app is available for viewing; refresh the page to load its new interface.
   this machine. The native API also reported completed WAV playback. This does
   not establish speaker settings on a different computer. Saved radio/rotator
   settings were preserved; no serial port was opened.
+
+## Radio testing, alert acknowledgement and audio volume — 8 October 2026
+
+- **Test radio connection** alternates verified MAIN frequencies of 145.000 and
+  145.555 MHz every 2 seconds, without a satellite target. The button becomes
+  **Stop test radio connection** and shows a yellow progress label. It uses saved
+  port/baud/address, stops live tracking, and never enables the rotator or sends
+  PTT/memory writes. A new control session cancels the previous session's pending
+  commands. Missing/incorrect replies stop the test. VHF on SUB is exchanged onto
+  MAIN before test tuning, respecting the IC-9700's different-band constraint.
+- Simulated device checks cover the exact frequency sequence and 2-second write
+  intervals, early orbit wakeups, echo/broadcast filtering, correct port/baud and
+  address, readback, stop/close, mid-command cancellation, rapid restart, failed
+  open/ACK/write/readback and no automatic restart. HTTP and DOM checks cover
+  start/stop, configuration changes, alert-pause independence, progress labels,
+  verified frequency display, missing ports and errors.
+- Rotator errors, including C2 timeouts, now stop/close only the rotator when
+  radio control is enabled. Simulations establish that both downlink and uplink
+  continue changing in both directions, without repeatedly reopening the failed
+  rotator. Checks cover a moving-rotator stop, manual restart, rotator-only
+  failure, stale observations during a timeout and a continuing radio status.
+  Radio failures still stop live control.
+- Closing the native Windows message no longer acknowledges the alert. Real
+  alerts remain in the shared app banner until explicit acknowledgement, even
+  when expired or paused. History has per-alert acknowledgement. Notification
+  clicks show the dashboard. Simulated Windows dialog/notification checks cover
+  dismissal, Settings visibility, expiry without further sound/notifications and
+  acknowledgement through the actual HTTP endpoint.
+- Windows alerts can set the default multimedia playback device to 100% and
+  unmute before native playback, with readback confirmation. This setting defaults
+  on, can be disabled without clearing pending alerts and adds no dependency.
+  Tests establish volume-before-sound ordering, readback/error handling, continued
+  playback if volume control fails, and no volume change with the option off or
+  on non-Windows systems. The default endpoint's real volume/mute state was read
+  successfully on this PC. The running monitor subsequently reported completed
+  native playback with verified 100% unmuted volume for a real JO-97 alert.
+  Automated suites mock changes and do not alter volume.
+- The expanded Earth land fill is darker green (#548566) with darker coastlines
+  (#31583f). A white outline/background preserves the ground-station marker and
+  label. Geographic positions, scale and satellite marker prominence are retained.
+- **121 Python tests passed on Python 3.12.14 and 3.14.8**, plus **25 offline DOM
+  checks**. The pre-existing Windows connection-abort issue recurred in two local
+  3.14 runs of an HTTP denial test; the subsequent complete run passed. Request
+  permission checks were not changed. DOM checks establish behaviour, not rendered
+  appearance. Radio/rotator validation uses simulated equipment rather than
+  physical motors, CI-V interfaces or radio reception.
+
+The updated preview is running with saved settings preserved. Equipment and the
+radio connection test start off; use their main-page buttons to activate them.

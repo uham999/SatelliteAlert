@@ -28,6 +28,7 @@ from orbits import (
 )
 from hardware import HardwareController, available_ports, select_target
 from profiles import doppler, DEFAULT_PROFILES
+from windows_audio import maximize_windows_volume
 
 ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger("satellite_alert")
@@ -69,15 +70,23 @@ class SoundPlayer:
         self.status = "Windows WAV audio · use Test alert to check" if self.windows else "Enable browser sound in the dashboard"
         self.busy = threading.Lock()
 
-    def play(self):
+    def play(self, maximize_volume=False):
         if not self.windows or not self.busy.acquire(blocking=False):
             return
+        volume_status = ''
+        if maximize_volume:
+            try:
+                maximize_windows_volume()
+                volume_status = ' · Windows volume 100%, unmuted'
+            except Exception as error:
+                volume_status = f' · Could not set Windows volume: {error}'
+                LOG.exception('Unable to set Windows playback volume; playing at current volume')
 
         def run():
             try:
                 import winsound
                 winsound.PlaySound(str(ROOT / "static" / "alert-chime.wav"), winsound.SND_FILENAME | winsound.SND_NODEFAULT)
-                self.status = "Windows WAV playback completed"
+                self.status = "Windows WAV playback completed" + volume_status
             except Exception as error:
                 self.status = f"Windows sound failed: {error}. Enable browser sound."
                 LOG.exception("Unable to play Windows sound")
@@ -217,7 +226,7 @@ class Monitor:
             if "latitude" in values or "longitude" in values:
                 combined["location_note"] = ""
             settings = validate_settings(combined)
-            recalculate = any(settings[key] != self.settings[key] for key in settings if key not in PAUSE_SETTINGS | HARDWARE_SETTINGS | {"earth_overlay"})
+            recalculate = any(settings[key] != self.settings[key] for key in settings if key not in PAUSE_SETTINGS | HARDWARE_SETTINGS | {"earth_overlay", "windows_maximum_volume"})
             hardware_changed = any(settings[key] != self.settings[key] for key in HARDWARE_SETTINGS | {"latitude", "longitude", "observer_height_m", "minimum_elevation", "satellites"})
             pause_changed = any(settings[key] != self.settings[key] for key in PAUSE_SETTINGS)
             if hardware_changed:
@@ -257,6 +266,10 @@ class Monitor:
         with self.lock:
             self._update_tracking()
             self.hardware.set_enabled(enabled, self.settings)
+
+    def toggle_radio_test(self, enabled):
+        with self.lock:
+            self.hardware.set_radio_test(enabled, self.settings)
 
     def acknowledge(self, alert_id: str | None = None):
         with self.lock:
@@ -448,8 +461,8 @@ class Monitor:
 
     def _ring(self):
         self.last_sound_at = time.monotonic()
+        self.sound.play(maximize_volume=self.settings["windows_maximum_volume"])
         self.sound_serial += 1
-        self.sound.play()
 
     def test_alert(self):
         with self.lock:
@@ -466,9 +479,8 @@ class Monitor:
             try:
                 import ctypes
                 message = "\n\n".join(alert["message"] + f"\nPredicted peak: {alert['peak_elevation']}°" for alert in alerts)
+                message += "\n\nAcknowledge this alert in Satellite Alert using Acknowledge & silence."
                 ctypes.windll.user32.MessageBoxW(None, message, "Satellite pass alert", 0x40 | 0x10000 | 0x40000)
-                for alert in alerts:
-                    self.acknowledge(alert["id"])
             except Exception:
                 LOG.exception("Windows popup failed; dashboard alert remains visible")
         threading.Thread(target=show, name="pass-popup", daemon=True).start()
@@ -598,6 +610,8 @@ class Handler(BaseHTTPRequestHandler):
                 monitor.toggle_pause(data.get("paused"))
             elif self.path == "/api/tracking":
                 monitor.toggle_tracking(data.get("enabled"))
+            elif self.path == "/api/radio-test":
+                monitor.toggle_radio_test(data.get("enabled"))
             elif self.path == "/api/test-alert":
                 monitor.test_alert()
             elif self.path == "/api/stop":

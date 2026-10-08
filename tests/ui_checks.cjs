@@ -22,7 +22,7 @@ async function dashboard(t, changes={}) {
       ground_latitude:48+index*2,ground_longitude:-8+index*2,satellite_height_km:800,
       detail:'Fresh test position',tle_age_days:.1,next_pass:null,
       doppler:{rx_hz:437801000,tx_hz:145989000,rx_shift_hz:1000,tx_shift_hz:-1000}})),
-    hardware:{enabled:false,error:null,rotator_status:'Off',radio_status:'Off',rotator_position:null,
+    hardware:{enabled:false,radio_test_enabled:false,radio_test_frequency_hz:null,error:null,rotator_status:'Off',radio_status:'Off',rotator_position:null,
       commanded_position:null,radio_rx_hz:null,radio_tx_hz:null},...changes};
   const updateTarget=()=>{server.tracking_target=clone(server.satellites.filter(row=>row.status==='tracking' && row.elevation>=0).sort((a,b)=>b.elevation-a.elevation)[0] || null);};
   updateTarget();
@@ -54,10 +54,16 @@ async function dashboard(t, changes={}) {
       server.settings={...server.settings,...body};server.hardware.enabled=false;
       server.satellites=server.satellites.filter(row=>server.settings.satellites.includes(row.name));updateTarget();result={ok:true};
     } else if(url==='/api/tracking'){
-      if(body.enabled && (!server.settings.rotator_port || !server.settings.radio_port)){ok=false;result={error:'Select an available serial port in Settings, then save.'};}
+      if(body.enabled && server.hardware.radio_test_enabled){ok=false;result={error:'Stop the radio connection test before starting live tracking.'};}
+      else if(body.enabled && (!server.settings.rotator_port || !server.settings.radio_port)){ok=false;result={error:'Select an available serial port in Settings, then save.'};}
       else{server.hardware.enabled=body.enabled;result={ok:true};}
+    } else if(url==='/api/radio-test'){
+      if(body.enabled && !ports.some(port=>port.device===server.settings.radio_port)){ok=false;result={error:'Select an available radio serial port in Settings, then save.'};}
+      else{server.hardware.enabled=false;server.hardware.radio_test_enabled=body.enabled;server.hardware.radio_test_frequency_hz=null;result={ok:true};}
     } else if(url==='/api/test-alert'){
       server.sound_serial++;server.alerts=[{id:'test-audio',name:'TEST',test:true,active:true,acknowledged:false,created_at:now,message:'TEST ALERT'}];result={ok:true};
+    } else if(url==='/api/acknowledge'){
+      for(const alert of server.alerts)if(!body.id || alert.id===body.id){alert.acknowledged=true;alert.active=false;}result={ok:true};
     } else if(url==='/api/pause'){server.paused=body.paused;server.pause_reason=body.paused?'manual':null;result={ok:true};}
     else throw new Error(`Unexpected test request: ${url}`);
     return {ok,json:async()=>clone(result)};
@@ -239,4 +245,91 @@ test('test alerts can check browser sound while paused, and disabled sound setti
   server.paused=true;await refresh();$('testAlert').click();await flush();assert.equal(sounds.tones.length,4);
   server.settings.sound_enabled=false;await refresh();$('testAlert').click();await flush();assert.equal(sounds.tones.length,4);
   assert.match($('toast').textContent,/Sound is disabled/);
+});
+
+test('radio test button starts and stops the server test, shows a yellow status and prevents competing tracking',async t=>{
+  const { $,server,refresh,requests }=await dashboard(t);server.settings.radio_port='COM11';server.hardware.enabled=true;server.paused=true;await refresh();
+  assert.equal($('radioTestToggle').textContent,'Test radio connection');assert.ok($('radioTestBanner').classList.contains('hidden'));
+  $('radioTestToggle').click();await flush();
+  assert.equal($('radioTestToggle').textContent,'Stop test radio connection');assert.equal($('radioTestToggle').getAttribute('aria-pressed'),'true');
+  assert.ok($('radioTestToggle').classList.contains('radio-testing'));assert.ok($('radioTestBanner').classList.contains('radio-test-banner'));
+  assert.ok(!$('radioTestBanner').classList.contains('hidden'));assert.match($('radioTestBanner').textContent,/Radio connection test in progress.*Connecting/);
+  assert.equal($('radioTestBanner').getAttribute('role'),'status');assert.equal($('trackingToggle').disabled,true);
+  assert.equal(server.hardware.enabled,false);assert.equal(server.paused,true);
+  server.hardware.radio_test_frequency_hz=145555000;server.hardware.radio_rx_hz=145555000;await refresh();
+  assert.match($('radioTestBanner').textContent,/145\.555000 MHz verified/);assert.match($('radioTestBanner').textContent,/every 2 seconds/);
+  $('radioTestToggle').click();await flush();
+  assert.equal($('radioTestToggle').textContent,'Test radio connection');assert.equal($('radioTestToggle').getAttribute('aria-pressed'),'false');
+  assert.ok($('radioTestBanner').classList.contains('hidden'));assert.equal($('trackingToggle').disabled,false);assert.equal(server.hardware.enabled,false);
+  assert.deepEqual(requests.filter(row=>row.url==='/api/radio-test').map(row=>row.body),[{enabled:true},{enabled:false}]);
+});
+
+test('missing radio port reports the error without displaying false test progress',async t=>{
+  const { $,server,refresh }=await dashboard(t);server.settings.radio_port='';await refresh();
+  $('radioTestToggle').click();await flush();assert.match($('toast').textContent,/available radio serial port/);
+  assert.equal($('radioTestToggle').textContent,'Test radio connection');assert.equal($('radioTestToggle').disabled,false);
+  assert.ok($('radioTestBanner').classList.contains('hidden'));
+});
+
+test('radio test failures clear the progress label and restore controls while displaying the serial error',async t=>{
+  const { $,server,refresh }=await dashboard(t);server.hardware.radio_test_enabled=true;await refresh();
+  assert.ok(!$('radioTestBanner').classList.contains('hidden'));
+  Object.assign(server.hardware,{radio_test_enabled:false,radio_test_frequency_hz:null,error:'IC-9700 did not acknowledge/respond.',radio_status:'Stopped after error'});await refresh();
+  assert.ok($('radioTestBanner').classList.contains('hidden'));assert.equal($('radioTestToggle').textContent,'Test radio connection');
+  assert.equal($('trackingToggle').disabled,false);assert.match($('equipmentStatus').textContent,/did not acknowledge/);
+});
+
+test('Windows notifications accompany the in-app banner; closing them leaves an acknowledgement available on Settings',async t=>{
+  const { $,w,server,refresh }=await dashboard(t),notifications=[];
+  w.Notification=class {static permission='granted';constructor(title,options){this.title=title;this.options=options;notifications.push(this);}close(){this.closed=true;}};
+  w.document.querySelector('.nav-item[data-view="settings"]').click();
+  server.alerts=[{id:'real-notification',name:'SO-50',test:false,active:true,acknowledged:false,created_at:server.now,message:'SO-50 pass approaching'}];await refresh();
+  assert.equal(notifications.length,1);assert.ok(!$('alertBanner').classList.contains('hidden'));
+  assert.equal($('alertBanner').closest('.view'),null);assert.ok(!$('view-settings').classList.contains('hidden'));
+  notifications[0].close();await refresh();assert.ok(!$('alertBanner').classList.contains('hidden'));
+  $('acknowledge').click();await flush();assert.equal(server.alerts[0].acknowledged,true);assert.ok($('alertBanner').classList.contains('hidden'));
+});
+
+test('expired real alerts stay visible for acknowledgement without playing sound or repeating Windows notifications',async t=>{
+  const { $,w,server,refresh }=await dashboard(t),notifications=[];
+  w.Notification=class {static permission='granted';constructor(){notifications.push(this);}close(){}};
+  const sounds=fakeAudio(w);$('enableSound').click();await flush();sounds.tones.length=0;
+  server.alerts=[{id:'expired',name:'ISS',test:false,active:false,acknowledged:false,created_at:server.now,message:'ISS pass'}];server.sound_serial++;await refresh();
+  assert.ok(!$('alertBanner').classList.contains('hidden'));assert.match($('alertTitle').textContent,/awaiting acknowledgement/);
+  assert.equal(sounds.tones.length,0);assert.equal(notifications.length,0);
+  server.paused=true;await refresh();assert.ok(!$('alertBanner').classList.contains('hidden'));
+  $('acknowledge').click();await flush();assert.ok($('alertBanner').classList.contains('hidden'));
+});
+
+test('history acknowledges a specific alert and Windows notification click opens its in-app controls',async t=>{
+  const { $,w,server,refresh,requests }=await dashboard(t),notifications=[];let focused=false;
+  w.focus=()=>{focused=true;};w.Notification=class {static permission='granted';constructor(){notifications.push(this);}close(){}};
+  server.alerts=[{id:'current',name:'ISS',test:false,active:true,acknowledged:false,created_at:server.now,message:'ISS pass'},
+    {id:'ended-test',name:'TEST',test:true,active:false,acknowledged:false,created_at:server.now,message:'TEST ALERT'}];await refresh();
+  w.document.querySelector('.nav-item[data-view="history"]').click();notifications[0].onclick();
+  assert.equal(focused,true);assert.ok(!$('view-dashboard').classList.contains('hidden'));
+  w.document.querySelector('.nav-item[data-view="history"]').click();$('history').querySelector('[data-acknowledge="ended-test"]').click();await flush();
+  assert.equal(server.alerts[1].acknowledged,true);assert.equal(server.alerts[0].acknowledged,false);
+  assert.deepEqual(requests.find(row=>row.url==='/api/acknowledge').body,{id:'ended-test'});
+  assert.equal($('history').querySelectorAll('[data-acknowledge]').length,1);
+});
+
+test('rotator C2 errors remain visible while radio tracking and both verified frequencies continue',async t=>{
+  const { $,server,refresh }=await dashboard(t);
+  Object.assign(server.hardware,{enabled:true,rotator_error:'No valid GS-232B C2 position reply.',rotator_status:'Stopped after error',
+    radio_status:'Tracking · frequencies verified',radio_rx_hz:437801000,radio_tx_hz:145989000});await refresh();
+  assert.equal($('trackingToggle').textContent,'Stop live tracking');assert.match($('equipmentStatus').textContent,/C2 position reply/);
+  assert.match($('equipmentStatus').textContent,/Radio control remains enabled/);assert.match($('equipmentStatus').textContent,/437\.801000 MHz/);
+  assert.match($('equipmentStatus').textContent,/145\.989000 MHz/);
+});
+
+test('maximum Windows volume is enabled by default and can be disabled without acknowledging an alert',async t=>{
+  const { $,w,server,refresh,requests }=await dashboard(t);
+  server.alerts=[{id:'pending-volume',name:'ISS',test:false,active:true,acknowledged:false,created_at:server.now,message:'ISS pass'}];await refresh();
+  w.document.querySelector('.nav-item[data-view="settings"]').click();
+  const option=$('settingsForm').elements.windows_maximum_volume;assert.equal(option.checked,true);
+  option.checked=false;$('settingsForm').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await flush();
+  assert.equal(requests.filter(row=>row.url==='/api/settings').at(-1).body.windows_maximum_volume,false);
+  assert.equal(server.alerts[0].acknowledged,false);assert.ok(!$('alertBanner').classList.contains('hidden'));
+  assert.equal($('saveStatus').textContent,'Settings saved.');
 });

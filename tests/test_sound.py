@@ -43,6 +43,35 @@ class SoundTests(unittest.TestCase):
             self.assertTrue(player.busy.acquire(timeout=2));player.busy.release()
         self.assertEqual(win.PlaySound.call_count, 1)
 
+    def test_volume_is_maximized_before_windows_sound_starts(self):
+        calls = []
+        win = SimpleNamespace(PlaySound=Mock(side_effect=lambda *args: calls.append('play')), SND_FILENAME=0x20000, SND_NODEFAULT=2)
+        player = SoundPlayer();player.windows = True
+        with patch.dict('sys.modules', winsound=win), patch('satellite_alert.maximize_windows_volume', side_effect=lambda: calls.append('volume')):
+            player.play(maximize_volume=True)
+            self.assertTrue(player.busy.acquire(timeout=2));player.busy.release()
+        self.assertEqual(calls, ['volume', 'play'])
+        self.assertIn('Windows volume 100%', player.status)
+
+    def test_volume_failure_does_not_prevent_playback_or_claim_success(self):
+        win = SimpleNamespace(PlaySound=Mock(), SND_FILENAME=0x20000, SND_NODEFAULT=2)
+        player = SoundPlayer();player.windows = True
+        with patch.dict('sys.modules', winsound=win), patch('satellite_alert.maximize_windows_volume', side_effect=OSError('No endpoint')), patch('satellite_alert.LOG'):
+            player.play(maximize_volume=True)
+            self.assertTrue(player.busy.acquire(timeout=2));player.busy.release()
+        win.PlaySound.assert_called_once()
+        self.assertIn('Could not set Windows volume', player.status)
+
+    def test_volume_option_off_or_non_windows_does_not_change_system_volume(self):
+        win = SimpleNamespace(PlaySound=Mock(), SND_FILENAME=0x20000, SND_NODEFAULT=2)
+        player = SoundPlayer();player.windows = True
+        with patch.dict('sys.modules', winsound=win), patch('satellite_alert.maximize_windows_volume') as volume:
+            player.play(maximize_volume=False)
+            self.assertTrue(player.busy.acquire(timeout=2));player.busy.release()
+            player.windows = False
+            player.play(maximize_volume=True)
+            volume.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

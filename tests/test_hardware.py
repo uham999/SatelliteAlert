@@ -10,7 +10,7 @@ import numpy as np
 from skyfield.api import wgs84
 
 from hardware import (HardwareController, angle_change, civ_frame, decode_frequency,
-                      frequency_bcd, parse_rotator_position, select_target)
+                      frequency_bcd, parse_rotator_position, select_target, radio_band)
 from orbits import DEFAULT_SETTINGS, OrbitCalculator, parse_tles, validate_settings, settings_for_startup
 from profiles import DEFAULT_PROFILES, doppler
 from satellite_alert import Monitor, atomic_json
@@ -31,9 +31,9 @@ class Device:
         self.clock, self.owner, self.parameters = clock, owner, parameters
         self.port, self.dtr, self.rts = None, True, True
         self.opened, self.closed = False, False
-        self.writes, self.buffer = [], bytearray()
+        self.writes, self.write_times, self.buffer = [], [], bytearray()
         self.selected = "main"
-        self.frequencies = {"main": 145_500_000, "sub": 435_000_000}
+        self.frequencies = dict(owner.initial_frequencies)
 
     def open(self):
         self.opened = True
@@ -47,6 +47,7 @@ class Device:
 
     def write(self, data):
         self.writes.append(data)
+        self.write_times.append(self.clock())
         if self.owner.incomplete:
             return len(data) - 1
         if self.port == "COM10":
@@ -63,7 +64,13 @@ class Device:
                 return len(data)
             if command == 0x07 and payload in (b"\xd0", b"\xd1"):
                 self.selected = "main" if payload == b"\xd0" else "sub"
+            if command == 0x07 and payload == b"\xb0":
+                self.frequencies['main'], self.frequencies['sub'] = self.frequencies['sub'], self.frequencies['main']
             if command == 0x05:
+                other = 'sub' if self.selected == 'main' else 'main'
+                if self.owner.reject_same_band and radio_band(decode_frequency(payload)) == radio_band(self.frequencies[other]):
+                    self.buffer.extend(bytes((0xFE, 0xFE, 0xE0, address, 0xFA, 0xFD)))
+                    return len(data)
                 self.frequencies[self.selected] = decode_frequency(payload)
             if self.owner.echo:
                 self.buffer.extend(data)
@@ -97,6 +104,8 @@ class Factory:
         self.devices, self.open_states = [], []
         self.incomplete, self.echo, self.no_ack = False, False, False
         self.reject_command, self.readback_offset = None, 0
+        self.initial_frequencies = {"main": 145_500_000, "sub": 435_000_000}
+        self.reject_same_band = False
         self.rotator_reply = b"AZ=350 EL=020\r\n"
 
     def __call__(self, **parameters):
@@ -337,14 +346,60 @@ class SerialTrackingTests(unittest.TestCase):
                 self.assertTrue(all(d.closed for d in self.factory.devices))
                 setattr(self.factory, attribute, None if attribute == "reject_command" else False if attribute == "no_ack" else 0)
 
-    def test_bad_rotator_reply_or_incomplete_write_stop_tracking(self):
+    def test_bad_rotator_reply_keeps_radio_but_incomplete_radio_write_stops_tracking(self):
         self.factory.rotator_reply = b"garbage\r"
         self.offer(); self.controller.set_enabled(True, self.settings); self.controller.step()
-        self.assertFalse(self.controller.snapshot()["enabled"])
+        self.assertTrue(self.controller.snapshot()["enabled"])
+        self.assertIn("C2", self.controller.snapshot()["rotator_error"])
+        self.assertIn("verified", self.controller.snapshot()["radio_status"])
         self.factory.rotator_reply = b"AZ=100 EL=020\r"
         self.factory.incomplete = True
         self.offer(); self.controller.set_enabled(True, self.settings); self.controller.step()
         self.assertFalse(self.controller.snapshot()["enabled"])
+
+    def test_missing_c2_stops_rotator_and_keeps_both_radio_doppler_updates(self):
+        self.start()
+        rotator, radio = self.controller.rotator, self.controller.radio
+        self.factory.rotator_reply = b''
+        self.clock.now += 5
+        self.row['doppler']['rx_hz'] += 200
+        self.row['doppler']['tx_hz'] -= 200
+        self.offer(); self.controller.step()
+        self.assertTrue(rotator.closed)
+        self.assertIn(b'S\r', rotator.writes)
+        self.assertFalse(radio.closed)
+        self.assertTrue(self.controller.snapshot()['enabled'])
+        self.assertIn('C2', self.controller.snapshot()['rotator_error'])
+        self.assertEqual(self.controller.snapshot()['radio_rx_hz'], self.row['doppler']['rx_hz'])
+        self.assertEqual(self.controller.snapshot()['radio_tx_hz'], self.row['doppler']['tx_hz'])
+        before = self.controller.snapshot()['frequency_updates']
+        self.row['doppler']['rx_hz'] -= 500
+        self.row['doppler']['tx_hz'] += 500
+        self.offer(); self.controller.step()
+        self.assertEqual(len(self.factory.devices), 2)  # No repeated attempts to reopen the failed rotator.
+        self.assertEqual(self.controller.snapshot()['frequency_updates'], before + 1)
+        self.assertEqual(self.controller.snapshot()['radio_rx_hz'], self.row['doppler']['rx_hz'])
+        self.assertEqual(self.controller.snapshot()['radio_tx_hz'], self.row['doppler']['tx_hz'])
+        self.factory.rotator_reply = b'AZ=100 EL=020\r'
+        self.controller.set_enabled(False, self.settings);self.controller.step()
+        self.start()
+        self.assertIsNone(self.controller.snapshot()['rotator_error'])
+
+    def test_rotator_only_c2_failure_stops_master_control(self):
+        self.settings['radio_enabled'] = False
+        self.factory.rotator_reply = b''
+        self.offer();self.controller.set_enabled(True, self.settings);self.controller.step()
+        self.assertFalse(self.controller.snapshot()['enabled'])
+        self.assertTrue(all(device.closed for device in self.factory.devices))
+
+    def test_c2_timeout_does_not_send_radio_an_observation_that_expired_during_the_query(self):
+        self.factory.rotator_reply = b''
+        self.offer();self.controller.set_enabled(True, self.settings)
+        self.clock.now += 5.5
+        self.controller.step()
+        self.assertTrue(self.controller.snapshot()['enabled'])
+        self.assertEqual(self.controller.snapshot()['frequency_updates'], 0)
+        self.assertIn('fresh', self.controller.snapshot()['radio_status'])
 
     def test_receive_only_uses_main_vfo_and_no_sub_frequency(self):
         self.settings["satellite_profiles"]["ISS"]["uplink_mhz"] = None

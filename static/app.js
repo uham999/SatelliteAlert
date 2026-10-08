@@ -141,26 +141,29 @@ function renderTable() {
 }
 
 function renderAlerts() {
-  const active=state.alerts.filter(alert=>alert.active && (!state.paused || alert.test));
-  $('alertBanner').classList.toggle('hidden',!active.length);
-  if (active.length) {
-    const tests=active.every(alert=>alert.test);
+  const active=state.alerts.filter(alert=>!alert.acknowledged && alert.active && (!state.paused || alert.test));
+  const pending=state.alerts.filter(alert=>!alert.acknowledged && (!alert.test || alert.active));
+  $('alertBanner').classList.toggle('hidden',!pending.length);
+  $('alertBanner').classList.toggle('awaiting-acknowledgement',!active.length);
+  if (pending.length) {
+    const tests=pending.every(alert=>alert.test),real=pending.filter(alert=>!alert.test);
     $('alertType').textContent=tests ? 'TEST ALERT · DEMONSTRATION' : 'SATELLITE PASS ALERT';
-    const approaching=active.some(alert=>!alert.test && alert.horizon_rise && Date.now()<new Date(alert.horizon_rise));
-    $('alertTitle').textContent=tests ? 'This is how your alert looks.' : active.filter(alert=>!alert.test).map(alert=>alert.name).join(' + ')+(approaching?' · pass approaching':' above your horizon');
-    $('alertMessage').textContent=tests ? 'A chime has been requested. Real passes use this banner and your chosen popup setting.' : active.map(alert=>alert.message).join(' ');
+    const approaching=real.some(alert=>alert.active && alert.horizon_rise && Date.now()<new Date(alert.horizon_rise));
+    const awaiting=real.some(alert=>!alert.active) || state.paused;
+    $('alertTitle').textContent=tests ? 'This is how your alert looks.' : [...new Set(real.map(alert=>alert.name))].join(' + ')+(awaiting?' · awaiting acknowledgement':approaching?' · pass approaching':' above your horizon');
+    $('alertMessage').textContent=tests ? 'A chime has been requested. Real passes stay here until you acknowledge them, alongside any Windows notification.' : pending.map(alert=>`${alert.active?'':`${formatTime(alert.created_at,true,true)} · `}${alert.message}`).join(' ');
   }
   for (const alert of active) {
     if (!notificationIds.has(alert.id)) {
       notificationIds.add(alert.id);
       if ('Notification' in window && Notification.permission==='granted') {
-        try{new Notification(alert.test?'Satellite Alert · Test':`Satellite Alert · ${alert.name}`,{body:alert.message,tag:alert.id});}catch(error){console.warn(error);}
+        try{const notification=new Notification(alert.test?'Satellite Alert · Test':`Satellite Alert · ${alert.name}`,{body:alert.message,tag:alert.id});notification.onclick=()=>{window.focus();showView('dashboard');notification.close();};}catch(error){console.warn(error);}
       }
     }
   }
   if(soundSerial!==null && state.sound_serial>soundSerial && active.length && (!state.paused || active.some(alert=>alert.test)) && browserSound && state.settings.sound_enabled) chime();
   soundSerial=state.sound_serial;
-  $('history').innerHTML=state.alerts.length ? state.alerts.map(alert=>`<div class="history-item"><div><strong>${esc(alert.test?'TEST ALERT':alert.name)}</strong> <span class="tag">${alert.acknowledged?'ACKNOWLEDGED':alert.active?'ACTIVE':'ENDED'}</span><p>${esc(alert.message)}</p></div><time>${formatTime(alert.created_at,true,true)}</time></div>`).join('') : '<p class="empty">No alerts yet. Use Test alert to check the banner and chime.</p>';
+  $('history').innerHTML=state.alerts.length ? state.alerts.map(alert=>`<div class="history-item"><div><strong>${esc(alert.test?'TEST ALERT':alert.name)}</strong> <span class="tag">${alert.acknowledged?'ACKNOWLEDGED':alert.active?'ACTIVE':'AWAITING ACKNOWLEDGEMENT'}</span><p>${esc(alert.message)}</p></div><div class="history-actions"><time>${formatTime(alert.created_at,true,true)}</time>${!alert.acknowledged?`<button class="button" data-acknowledge="${esc(alert.id)}">Acknowledge</button>`:''}</div></div>`).join('') : '<p class="empty">No alerts yet. Use Test alert to check the banner and chime.</p>';
 }
 function renderStatus() {
   const warnings=[];
@@ -231,10 +234,14 @@ function drawWorldCanvas(canvas) {
   const projection=d3.geoOrthographic().rotate([-s.longitude,-s.latitude]).translate([cx,cy]).scale(r).precision(.5);
   const path=d3.geoPath(projection,ctx);
   ctx.beginPath();path({type:'Sphere'});ctx.fillStyle='#dceef3';ctx.fill();ctx.strokeStyle='#94bac3';ctx.lineWidth=1.5;ctx.stroke();
-  if(worldLand){ctx.beginPath();path(worldLand);ctx.fillStyle='#b4d4bf';ctx.fill();ctx.strokeStyle='#7ca58b';ctx.lineWidth=1;ctx.stroke();}
+  if(worldLand){ctx.beginPath();path(worldLand);ctx.fillStyle='#548566';ctx.fill();ctx.strokeStyle='#31583f';ctx.lineWidth=1;ctx.stroke();}
   ctx.beginPath();path(d3.geoGraticule10());ctx.strokeStyle='#adc8cf';ctx.lineWidth=.7;ctx.stroke();
-  ctx.strokeStyle='#8557b2';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(cx-9,cy);ctx.lineTo(cx+9,cy);ctx.moveTo(cx,cy-9);ctx.lineTo(cx,cy+9);ctx.stroke();
-  ctx.font='18px Segoe UI';ctx.fillStyle='#634181';ctx.textAlign='center';ctx.fillText('Your ground station',cx,cy+26);
+  ctx.beginPath();ctx.moveTo(cx-9,cy);ctx.lineTo(cx+9,cy);ctx.moveTo(cx,cy-9);ctx.lineTo(cx,cy+9);
+  ctx.strokeStyle='#fff';ctx.lineWidth=6;ctx.stroke();ctx.strokeStyle='#8557b2';ctx.lineWidth=3;ctx.stroke();
+  ctx.font='18px Segoe UI';ctx.textAlign='center';
+  const stationLabel='Your ground station',stationLabelWidth=ctx.measureText(stationLabel).width+14;
+  ctx.fillStyle='#ffffffdd';ctx.fillRect(cx-stationLabelWidth/2,cy+9,stationLabelWidth,25);
+  ctx.fillStyle='#634181';ctx.fillText(stationLabel,cx,cy+26);
   const visible=visibleSatellites().filter(row=>Number.isFinite(row.ground_latitude) && Number.isFinite(row.ground_longitude));
   drawSatelliteMarkers(ctx,visible,row=>projection([row.ground_longitude,row.ground_latitude]),w,h);
 }
@@ -297,10 +304,16 @@ function renderTracking() {
   const h=state.hardware,target=state.tracking_target,visible=visibleSatellites();
   $('trackingToggle').textContent=h.enabled?'Stop live tracking':'Start live tracking';
   $('trackingToggle').classList.toggle('tracking-on',h.enabled);
-  $('trackingSummary').textContent=h.enabled?(target?`Tracking ${target.name} · highest current elevation · ${visible.length} above the horizon`:'Tracking is enabled. Waiting for a satellite above the tracking limit.'):'Live adjustments are off. Start live tracking to control your configured equipment.';
+  $('trackingToggle').disabled=Boolean(h.radio_test_enabled);
+  $('radioTestToggle').textContent=h.radio_test_enabled?'Stop test radio connection':'Test radio connection';
+  $('radioTestToggle').classList.toggle('radio-testing',Boolean(h.radio_test_enabled));
+  $('radioTestToggle').setAttribute('aria-pressed',String(Boolean(h.radio_test_enabled)));
+  $('radioTestBanner').classList.toggle('hidden',!h.radio_test_enabled);
+  $('radioTestBanner').textContent=h.radio_test_enabled?`Radio connection test in progress · ${h.radio_test_frequency_hz?`MAIN ${mhz(h.radio_test_frequency_hz)} verified`:'Connecting…'} · 145.000 ↔ 145.555 MHz every 2 seconds`:'';
+  $('trackingSummary').textContent=h.radio_test_enabled?'Radio connection test active. Live satellite tracking is stopped.':h.enabled?(target?`Tracking ${target.name} · highest current elevation · ${visible.length} above the horizon`:'Tracking is enabled. Waiting for a satellite above the tracking limit.'):'Live adjustments are off. Start live tracking to control your configured equipment.';
   $('liveTarget').innerHTML=target?liveDetails(target):'<p class="subtle">No watched satellite is currently above the tracking limit.</p>';
   const pos=h.rotator_position,command=h.commanded_position;
-  $('equipmentStatus').innerHTML=`<div class="equipment-grid"><div><strong>Rotator · ${esc(h.rotator_status)}</strong><p>Reported: ${pos?`az ${pos.azimuth}° · el ${pos.elevation}°`:'—'}</p><p>Last command: ${command?`az ${command.azimuth}° · el ${command.elevation}°`:'—'}</p></div><div><strong>Radio · ${esc(h.radio_status)}</strong><p>Verified RX: ${mhz(h.radio_rx_hz)}</p><p>Verified TX: ${mhz(h.radio_tx_hz)}</p></div></div>${h.error?`<p class="equipment-error">${esc(h.error)}</p>`:''}`;
+  $('equipmentStatus').innerHTML=`<div class="equipment-grid"><div><strong>Rotator · ${esc(h.rotator_status)}</strong><p>Reported: ${pos?`az ${pos.azimuth}° · el ${pos.elevation}°`:'—'}</p><p>Last command: ${command?`az ${command.azimuth}° · el ${command.elevation}°`:'—'}</p></div><div><strong>Radio · ${esc(h.radio_status)}</strong><p>Verified RX: ${mhz(h.radio_rx_hz)}</p><p>Verified TX: ${mhz(h.radio_tx_hz)}</p></div></div>${h.rotator_error?`<p class="equipment-error">Rotator: ${esc(h.rotator_error)}${h.enabled && state.settings.radio_enabled?' Radio control remains enabled.':''}</p>`:''}${h.error?`<p class="equipment-error">${esc(h.error)}</p>`:''}`;
   $('expandedSummary').textContent=`${visible.length} watched satellite${visible.length===1?'':'s'} above the horizon${visible.length?` · highest: ${visible[0].name} at ${visible[0].elevation.toFixed(1)}°`:''}`;
   $('expandedSatellites').innerHTML=visible.length?visible.map((row,i)=>`<article class="expanded-satellite ${i===0?'highest':''}">${liveDetails(row)}</article>`).join(''):'<p>No watched satellite is currently above the horizon. The sky continues to update.</p>';
 }
@@ -352,6 +365,10 @@ $('scanPorts').addEventListener('click',()=>refreshPorts());
 $('trackingToggle').addEventListener('click',async()=>{
   try{await post('/api/tracking',{enabled:!state.hardware.enabled});await refreshState();toast(state.hardware.enabled?'Live tracking enabled.':'Live tracking stopped.');}catch(error){toast(error.message);}
 });
+$('radioTestToggle').addEventListener('click',async()=>{
+  $('radioTestToggle').disabled=true;
+  try{await post('/api/radio-test',{enabled:!state.hardware.radio_test_enabled});await refreshState();toast(state.hardware.radio_test_enabled?'Radio connection test started.':'Radio connection test stopped.');}catch(error){toast(error.message);}finally{$('radioTestToggle').disabled=false;}
+});
 function expandSky(){if(!$('skyDialog').open)$('skyDialog').showModal();renderTracking();requestAnimationFrame(drawSky);loadWorldLand();}
 $('sky').addEventListener('click',expandSky);$('expandSky').addEventListener('click',expandSky);
 $('sky').addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();expandSky();}});
@@ -379,7 +396,11 @@ $('enableSound').addEventListener('click',async()=>{if(await enableAudio()){chim
 $('testAlert').addEventListener('click',async()=>{
   try{const ready=await enableAudio();await post('/api/test-alert');await refreshState();toast(!state.settings.sound_enabled?'Test banner triggered. Sound is disabled in Settings.':ready?'Test alert triggered. Browser sound enabled; it expires after 60 seconds.':'Test alert requested. Browser audio is blocked; check tab mute/output and click Enable browser sound.');}catch(error){toast(error.message);}
 });
-$('acknowledge').addEventListener('click',async()=>{try{await post('/api/acknowledge');toast('Acknowledged. This pass will stay silent.');}catch(error){toast(error.message);}});
+$('acknowledge').addEventListener('click',async()=>{try{await post('/api/acknowledge');await refreshState();toast('Acknowledged. This pass will stay silent.');}catch(error){toast(error.message);}});
+$('history').addEventListener('click',async event=>{
+  const button=event.target.closest('[data-acknowledge]');if(!button)return;
+  try{await post('/api/acknowledge',{id:button.dataset.acknowledge});await refreshState();toast('Alert acknowledged.');}catch(error){toast(error.message);}
+});
 $('refresh').addEventListener('click',async()=>{try{await post('/api/refresh');toast('Downloading the latest AMSAT orbital elements…');}catch(error){toast(error.message);}});
 $('pause').addEventListener('click',async()=>{try{await post('/api/pause',{paused:!state.paused});}catch(error){toast(error.message);}});
 $('earthToggle').addEventListener('change',async event=>{
@@ -396,7 +417,7 @@ $('settingsForm').addEventListener('submit',async event=>{
     const field=form.elements.namedItem(key);if(!field)continue;
     data[key]=field.type==='checkbox'?field.checked:field.type==='number'||['rotator_baud','radio_baud','rotator_max_azimuth'].includes(key)?Number(field.value):field.value;
   }
-  const recalculate=Object.keys(data).some(key=>!['earth_overlay','automatic_pause_enabled','automatic_pause_start','automatic_pause_hours','rotator_enabled','rotator_port','rotator_baud','rotator_max_azimuth','radio_enabled','radio_port','radio_baud','radio_address','radio_step_hz','tracking_minimum_mode'].includes(key) && JSON.stringify(data[key])!==JSON.stringify(state.settings[key]));
+  const recalculate=Object.keys(data).some(key=>!['earth_overlay','windows_maximum_volume','automatic_pause_enabled','automatic_pause_start','automatic_pause_hours','rotator_enabled','rotator_port','rotator_baud','rotator_max_azimuth','radio_enabled','radio_port','radio_baud','radio_address','radio_step_hz','tracking_minimum_mode'].includes(key) && JSON.stringify(data[key])!==JSON.stringify(state.settings[key]));
   try{await post('/api/settings',data);if(recalculate){selectedPass=null;selectedName=null;}await refreshState();$('saveStatus').textContent=recalculate?'Saved. Recalculating your passes…':'Settings saved.';toast('Settings saved.');}catch(error){$('saveStatus').textContent=error.message;toast(error.message);}
 });
 $('enableNotifications').addEventListener('click',async()=>{

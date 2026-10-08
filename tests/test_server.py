@@ -1,5 +1,5 @@
 """Integration checks against the actual local HTTP server (no internet)."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection
 import json
 from pathlib import Path
@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from orbits import DEFAULT_SETTINGS
@@ -112,6 +113,50 @@ class DashboardServerTests(unittest.TestCase):
         self.assertNotIn("12345", self.monitor.settings["satellite_profiles"])
         saved = json.loads((self.root / "settings.json").read_text())
         self.assertEqual(saved["satellites"], ["ISS"])
+
+    def test_radio_test_endpoint_and_pause_independence_without_opening_ports(self):
+        self.monitor.hardware.ports_provider = lambda: [{"device": "COM6"}]
+        self.assertEqual(self.request("POST", "/api/radio-test", {"enabled": True})[0], 200)
+        _, body, _ = self.request("GET", "/api/state")
+        self.assertTrue(json.loads(body)["hardware"]["radio_test_enabled"])
+        self.assertFalse(json.loads(body)["hardware"]["enabled"])
+        self.assertEqual(self.request("POST", "/api/pause", {"paused": True})[0], 200)
+        self.assertTrue(self.monitor.hardware.snapshot()["radio_test_enabled"])
+        self.assertEqual(self.request("POST", "/api/tracking", {"enabled": True})[0], 400)
+        self.assertEqual(self.request("POST", "/api/radio-test", {"enabled": False})[0], 200)
+        self.assertFalse(self.monitor.hardware.snapshot()["radio_test_enabled"])
+        self.assertIsNone(self.monitor.hardware.radio)
+
+    def test_radio_test_rejects_missing_ports_and_settings_edits_stop_it(self):
+        self.monitor.hardware.ports_provider = lambda: []
+        self.assertEqual(self.request("POST", "/api/radio-test", {"enabled": True})[0], 400)
+        self.assertEqual(self.request("POST", "/api/radio-test", {"enabled": "true"})[0], 400)
+        self.monitor.hardware.ports_provider = lambda: [{"device": "COM6"}]
+        self.assertEqual(self.request("POST", "/api/radio-test", {"enabled": True})[0], 200)
+        self.assertEqual(self.request("POST", "/api/settings", {"radio_baud": 9600})[0], 200)
+        self.assertFalse(self.monitor.hardware.snapshot()["radio_test_enabled"])
+        self.assertEqual(self.monitor.settings["radio_baud"], 9600)
+
+    def test_closing_windows_popup_keeps_dashboard_alert_until_explicit_acknowledgement(self):
+        alert = self.monitor._make_alert("ISS", False, self.now, self.now + timedelta(seconds=60), 35, 65,
+                                         horizon_rise=self.now + timedelta(minutes=5))
+        self.monitor.alerts.append(alert)
+        messages = []
+        windows = SimpleNamespace(windll=SimpleNamespace(user32=SimpleNamespace(MessageBoxW=lambda *args: messages.append(args) or 1)))
+        with patch("satellite_alert.threading.Thread") as popup_thread:
+            self.monitor._popup([alert])
+            callback = popup_thread.call_args.kwargs["target"]
+        with patch.dict("sys.modules", ctypes=windows):
+            callback()
+        self.assertIn("Acknowledge & silence", messages[0][1])
+        self.assertFalse(alert["acknowledged"])
+        self.now += timedelta(seconds=61)
+        _, body, _ = self.request("GET", "/api/state")
+        saved = next(row for row in json.loads(body)["alerts"] if row["id"] == alert["id"])
+        self.assertFalse(saved["active"])
+        self.assertFalse(saved["acknowledged"])
+        self.assertEqual(self.request("POST", "/api/acknowledge", {"id": alert["id"]})[0], 200)
+        self.assertTrue(alert["acknowledged"])
 
     def test_earth_image_served_locally_and_early_timing_saved(self):
         status, body, headers = self.request("GET", "/earth-overlay.png")

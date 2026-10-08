@@ -34,6 +34,7 @@ DEFAULT_SETTINGS = {
     "alert_mode": "before_horizon_5",
     "earth_overlay": True,
     "sound_enabled": True,
+    "windows_maximum_volume": True,
     "repeat_sound_seconds": 30,
     "windows_popup": True,
     "automatic_pause_enabled": True,
@@ -84,7 +85,7 @@ def validate_settings(values: dict) -> dict:
         if isinstance(result[key], bool) or not math.isfinite(value) or not lower <= value <= upper:
             raise ValueError(f"{key.replace('_', ' ')} must be between {lower} and {upper}.")
         result[key] = value
-    for key in ("sound_enabled", "windows_popup", "earth_overlay", "automatic_pause_enabled", "rotator_enabled", "radio_enabled"):
+    for key in ("sound_enabled", "windows_maximum_volume", "windows_popup", "earth_overlay", "automatic_pause_enabled", "rotator_enabled", "radio_enabled"):
         if not isinstance(result[key], bool):
             raise ValueError(f"{key} must be true or false.")
     if not isinstance(result["automatic_pause_start"], str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", result["automatic_pause_start"]):

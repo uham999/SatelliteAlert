@@ -18,6 +18,7 @@
   "alert_mode": "before_horizon_5",
   "earth_overlay": true,
   "sound_enabled": true,
+  "windows_maximum_volume": true,
   "repeat_sound_seconds": 30.0,
   "windows_popup": true,
   "automatic_pause_enabled": true,
