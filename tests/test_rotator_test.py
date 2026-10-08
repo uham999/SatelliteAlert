@@ -65,6 +65,22 @@ class RotatorConnectionTests(unittest.TestCase):
                 self.assertEqual(self.controller.snapshot()['rotator_test'], result)
         self.assertEqual(self.factory.devices, [])
 
+    def test_compact_c2_reply_succeeds_in_connection_test_and_live_tracking(self):
+        self.factory.rotator_reply = b'AZ=183EL=010\r\n'
+        result = self.controller.test_rotator(self.settings)
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(result['response'], 'AZ=183EL=010\r\n')
+        self.assertEqual(result['position'], {'azimuth': 183, 'elevation': 10})
+        self.assertEqual(result['tested_at'], self.now.isoformat())
+        self.start_tracking()
+        state = self.controller.snapshot()
+        self.assertEqual(state['rotator_position'], result['position'])
+        self.assertEqual(state['rotator_status'], 'Tracking')
+        self.assertIsNone(state['rotator_error'])
+        self.assertIsNone(state['error'])
+        self.assertFalse(self.controller.rotator.closed)
+        self.assertEqual(self.controller.rotator.writes, [b'C2\r', b'W100 020\r'])
+
     def test_echo_and_split_legacy_reply_are_collected_without_discarding_the_raw_response(self):
         self.factory.rotator_reply = b'C2\r\n+0350+0020\r\n'
         result = self.controller.test_rotator(self.settings)

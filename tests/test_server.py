@@ -141,6 +141,7 @@ class DashboardServerTests(unittest.TestCase):
     def test_rotator_test_endpoint_returns_raw_reply_and_time_in_shared_state(self):
         clock = Clock()
         factory = Factory(clock)
+        factory.rotator_reply = b"AZ=183EL=010\r\n"
         self.monitor.hardware.serial_factory = factory
         self.monitor.hardware.ports_provider = lambda: [{"device": "COM10"}]
         self.monitor.hardware.monotonic = clock
@@ -151,7 +152,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["tested_at"], self.now.isoformat())
-        self.assertEqual(result["response"], "AZ=350 EL=020\r\n")
+        self.assertEqual(result["response"], "AZ=183EL=010\r\n")
+        self.assertEqual(result["position"], {"azimuth": 183, "elevation": 10})
         self.assertEqual(factory.devices[0].writes, [b"C2\r"])
         self.assertTrue(factory.devices[0].closed)
         _, body, _ = self.request("GET", "/api/state")

@@ -49,9 +49,10 @@ def civ_frame(address, command, data=b""):
 
 
 def parse_rotator_position(reply):
-    # GS-232B returns AZ=aaa EL=eee. Older compatible controllers use +aaaa+eeee.
+    # Accept AZ=aaaEL=eee with or without a gap between the two angles.
+    # Older compatible controllers use +aaaa+eeee.
     text = reply.decode("ascii", errors="replace")
-    match = re.search(r"AZ\s*=\s*(\d{1,3})\s+EL\s*=\s*(\d{1,3})", text, re.I)
+    match = re.search(r"AZ\s*=\s*(\d{1,3})\s*EL\s*=\s*(\d{1,3})", text, re.I)
     if not match:
         match = re.search(r"\+(\d{4})\+(\d{4})", text)
     if not match:

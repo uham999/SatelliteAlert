@@ -339,3 +339,19 @@ has only been verified with simulated equipment so far. It needs confirmation
 on the connected IC-9700. Codex's browser-control process again failed to start
 because of its Windows sandbox helper; the DOM checks do not establish rendered
 appearance. The updated local dashboard is running and can be reloaded normally.
+
+## Compact C2 replies — 8 October 2026
+
+The user supplied a valid physical-controller reply, `AZ=183EL=010\r\n`, that
+the connection test incorrectly rejected. The shared parser required whitespace
+between the two angles. That gap is now optional, so both the one-shot test and
+live tracking accept compact and spaced replies while retaining the legacy
+format and angle limits.
+
+The exact supplied bytes were exercised through the parser, the connection-test
+controller, a live tracking cycle and the authenticated HTTP endpoint. They now
+produce success with azimuth 183° and elevation 10°, retaining the raw response
+and test time. Live tracking continues rather than setting a rotator error.
+Malformed and out-of-range compact replies remain rejected. **141 Python tests
+passed on Python 3.12.14 and 3.14.8**. The serial regression checks use simulated
+devices; no physical port was opened by the validation suite.

@@ -329,6 +329,9 @@ The result panel shows the **test date/time**, port, baud, **raw C2 reply** and
 decoded azimuth/elevation when valid. Times follow the dashboard's local/UTC
 selection; `\r` and `\n` make the reply's line endings visible. No response within
 0.8 seconds, a malformed reply, or a serial error is reported in the same panel.
+Replies such as `AZ=183EL=010\r\n` are valid: the space between the azimuth and
+elevation is optional. Both the connection test and live tracking accept them,
+as well as spaced replies and the older `+aaaa+eeee` format.
 The last result remains visible across dashboard refreshes until another test
 or a program restart.
 

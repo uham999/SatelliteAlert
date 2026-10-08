@@ -133,8 +133,9 @@ class ProtocolTests(unittest.TestCase):
 
     def test_rotator_report_formats_and_limits(self):
         self.assertEqual(parse_rotator_position(b"\r\nAZ=123 EL=045\r"), {"azimuth": 123, "elevation": 45})
+        self.assertEqual(parse_rotator_position(b"AZ=183EL=010\r\n"), {"azimuth": 183, "elevation": 10})
         self.assertEqual(parse_rotator_position(b"+0365+0080\r"), {"azimuth": 365, "elevation": 80})
-        for data in (b"?>", b"AZ=999 EL=045", b"AZ=123 EL=999"):
+        for data in (b"?>", b"AZ=999 EL=045", b"AZ=123 EL=999", b"AZ=999EL=045\r\n", b"AZ=123EL=999\r\n"):
             with self.assertRaises(OSError):
                 parse_rotator_position(data)
         self.assertAlmostEqual(angle_change(359.8, .2), .4)
