@@ -286,3 +286,56 @@ local app is available for viewing; refresh the page to load its new interface.
 
 The updated preview is running with saved settings preserved. Equipment and the
 radio connection test start off; use their main-page buttons to activate them.
+
+## Rotator C2 diagnostic and pass-radio band selection — 8 October 2026
+
+- The main-page **Test rotator connection** button sends exactly one `C2\r`
+  using the saved rotator port and baud. Its persistent result shows test time,
+  port, baud, raw response (including visible line endings), decoded position,
+  and a warning/error for unconfigured/unavailable ports, timeouts or bad replies.
+  The authenticated HTTP endpoint also makes the last result available to other
+  dashboard tabs. The query works with live tracking off and the rotator checkbox
+  disabled. Temporary ports close after the query; an existing live connection
+  is reused under the same I/O lock as tracking. It does not send a pointing
+  command, change the radio/control session, or restart a failed rotator.
+- Simulated C2 checks cover saved port/baud, modem lines, exact command, raw
+  replies and echoes, timestamps, legacy format, missing/unavailable ports,
+  malformed/out-of-range/incomplete/oversized replies, timeout limits, open/write/
+  read failures, partial response retention, cleanup, shutdown and active-radio
+  port conflicts. A concurrent test establishes that live pointing waits for
+  the C2 response rather than interleaving commands. Radio test timing and both
+  pass Doppler frequencies continue afterwards. HTTP/DOM checks cover result
+  persistence, missing-port warnings, safe rendering, local/UTC times and a
+  disabled button during the query.
+- The user reported that the connection test worked on their IC-9700 but an
+  actual pass stopped with **command 05 (FA)**. The same failure was reproduced
+  in the serial simulator: MAIN on VHF and SUB on UHF, followed by an ISS/UHF
+  downlink tune. Pass initialization previously omitted the MAIN/SUB exchange
+  already used by the connection test. It now reads the actual bands after
+  entering the requested satellite/VFO mode, and exchanges MAIN/SUB when the
+  downlink band is on SUB before setting either frequency. The commands were
+  checked against the [Icom CI-V reference guide](https://www.icomfrance.com/uploads/files/produit/not-IC-9700_ENG_CI-V_3a-en.pdf);
+  the basic manual's band selection section prohibits the same band on both
+  receivers. The simulator now enforces that restriction by default.
+- Regression checks cover VHF test-to-UHF pass transitions, VHF/UHF satellite
+  handovers, approaching/receding Doppler updates, all 36 combinations of initial
+  and requested distinct VHF/UHF/1.2 GHz band pairs, satellite-mode band restoration,
+  receive-only operation, same-band rejection and command failures. Acknowledgement
+  and RX/TX readback remain required; no PTT or memory writes are introduced.
+- Calculated pass frequencies are explicitly labelled. The equipment panel
+  reports last verified RX/TX, readback time and satellite, plus confirmed pass
+  update count. A serial failure or a visible pass with live control off has a
+  prominent explanation at the top of the main page. Simulated UI checks show
+  that changing calculated values does not fabricate radio readback.
+- **140 Python tests passed on Python 3.12.14 and 3.14.8**, and all **30 offline
+  DOM checks passed**. The running preview was restarted and serves the new
+  button and hardware state fields. Its settings file hash was unchanged:
+  saved COM6/9600 radio and COM3/9600 rotator selections were preserved.
+  Live tracking and the radio connection test are off after restart.
+
+No physical serial port was opened during this validation. The user confirmed
+the earlier radio connection test works, but the corrected actual-pass behaviour
+has only been verified with simulated equipment so far. It needs confirmation
+on the connected IC-9700. Codex's browser-control process again failed to start
+because of its Windows sandbox helper; the DOM checks do not establish rendered
+appearance. The updated local dashboard is running and can be reloaded normally.

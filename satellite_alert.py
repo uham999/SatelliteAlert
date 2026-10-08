@@ -271,6 +271,12 @@ class Monitor:
         with self.lock:
             self.hardware.set_radio_test(enabled, self.settings)
 
+    def test_rotator(self):
+        with self.lock:
+            settings = deepcopy(self.settings)
+        # Do not hold the monitor lock while waiting for a serial response.
+        return self.hardware.test_rotator(settings)
+
     def acknowledge(self, alert_id: str | None = None):
         with self.lock:
             for alert in self.alerts:
@@ -612,6 +618,8 @@ class Handler(BaseHTTPRequestHandler):
                 monitor.toggle_tracking(data.get("enabled"))
             elif self.path == "/api/radio-test":
                 monitor.toggle_radio_test(data.get("enabled"))
+            elif self.path == "/api/rotator-test":
+                return self._send(200, {"ok": True, "result": monitor.test_rotator()})
             elif self.path == "/api/test-alert":
                 monitor.test_alert()
             elif self.path == "/api/stop":

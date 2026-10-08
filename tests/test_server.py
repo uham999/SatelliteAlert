@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from orbits import DEFAULT_SETTINGS
 from satellite_alert import LocalServer, Monitor, ROOT, atomic_json
+from test_hardware import Clock, Factory
 
 FIXTURE = (Path(__file__).parent / "fixtures/iss.tle").read_text()
 
@@ -136,6 +137,44 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/settings", {"radio_baud": 9600})[0], 200)
         self.assertFalse(self.monitor.hardware.snapshot()["radio_test_enabled"])
         self.assertEqual(self.monitor.settings["radio_baud"], 9600)
+
+    def test_rotator_test_endpoint_returns_raw_reply_and_time_in_shared_state(self):
+        clock = Clock()
+        factory = Factory(clock)
+        self.monitor.hardware.serial_factory = factory
+        self.monitor.hardware.ports_provider = lambda: [{"device": "COM10"}]
+        self.monitor.hardware.monotonic = clock
+        self.monitor.hardware.utc_clock = lambda: self.now
+        self.assertEqual(self.request("POST", "/api/settings", {"rotator_port": "COM10", "rotator_enabled": False})[0], 200)
+        status, body, _ = self.request("POST", "/api/rotator-test")
+        result = json.loads(body)["result"]
+        self.assertEqual(status, 200)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["tested_at"], self.now.isoformat())
+        self.assertEqual(result["response"], "AZ=350 EL=020\r\n")
+        self.assertEqual(factory.devices[0].writes, [b"C2\r"])
+        self.assertTrue(factory.devices[0].closed)
+        _, body, _ = self.request("GET", "/api/state")
+        state = json.loads(body)
+        self.assertEqual(state["hardware"]["rotator_test"], result)
+        self.assertFalse(state["hardware"]["enabled"])
+        self.assertEqual(state["hardware"]["rotator_position"], result["position"])
+
+    def test_rotator_test_missing_port_warns_without_opening_and_preserves_alerts_and_pause(self):
+        self.monitor.settings["rotator_port"] = ""
+        self.monitor.toggle_pause(True)
+        self.monitor.test_alert()
+        with patch.object(self.monitor.hardware, "_open") as open_port:
+            status, body, _ = self.request("POST", "/api/rotator-test")
+        result = json.loads(body)["result"]
+        self.assertEqual(status, 200)
+        self.assertEqual(result["status"], "warning")
+        self.assertIn("No rotator port is configured", result["message"])
+        self.assertFalse(result["command_sent"])
+        open_port.assert_not_called()
+        self.assertTrue(self.monitor.paused)
+        self.assertFalse(self.monitor.alerts[-1]["acknowledged"])
+        self.assertEqual(self.monitor.hardware.snapshot()["rotator_test"], result)
 
     def test_closing_windows_popup_keeps_dashboard_alert_until_explicit_acknowledgement(self):
         alert = self.monitor._make_alert("ISS", False, self.now, self.now + timedelta(seconds=60), 35, 65,

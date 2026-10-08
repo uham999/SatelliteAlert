@@ -298,7 +298,7 @@ function mhz(value){return value==null?'—':`${(value/1000000).toFixed(6)} MHz`
 function liveDetails(row) {
   const f=row.doppler || {};
   const ground=Number.isFinite(row.ground_latitude)?`<p class="ground-position">Above ${Math.abs(row.ground_latitude).toFixed(2)}° ${row.ground_latitude>=0?'N':'S'}, ${Math.abs(row.ground_longitude).toFixed(2)}° ${row.ground_longitude>=0?'E':'W'} · altitude ${Math.round(row.satellite_height_km)} km</p>`:'';
-  return `<div class="live-name"><strong>${esc(row.name)}</strong><span class="tag teal">${row.elevation.toFixed(1)}° elevation</span></div>${ground}<div class="live-metrics"><div><span>Satellite azimuth</span><strong>${row.azimuth.toFixed(1)}°</strong></div><div><span>Satellite elevation</span><strong>${row.elevation.toFixed(1)}°</strong></div><div><span>Downlink / RX · Doppler corrected</span><strong>${mhz(f.rx_hz)}</strong><span>${f.rx_shift_hz==null?'Set a frequency':`${f.rx_shift_hz>=0?'+':''}${f.rx_shift_hz} Hz shift`}</span></div><div><span>Uplink / TX · Doppler corrected</span><strong>${mhz(f.tx_hz)}</strong><span>${f.tx_shift_hz==null?'Receive only':`${f.tx_shift_hz>=0?'+':''}${f.tx_shift_hz} Hz shift`}</span></div></div>`;
+  return `<div class="live-name"><strong>${esc(row.name)}</strong><span class="tag teal">${row.elevation.toFixed(1)}° elevation</span></div>${ground}<div class="live-metrics"><div><span>Satellite azimuth</span><strong>${row.azimuth.toFixed(1)}°</strong></div><div><span>Satellite elevation</span><strong>${row.elevation.toFixed(1)}°</strong></div><div><span>Calculated downlink / RX · Doppler corrected</span><strong>${mhz(f.rx_hz)}</strong><span>${f.rx_shift_hz==null?'Set a frequency':`${f.rx_shift_hz>=0?'+':''}${f.rx_shift_hz} Hz shift`}</span></div><div><span>Calculated uplink / TX · Doppler corrected</span><strong>${mhz(f.tx_hz)}</strong><span>${f.tx_shift_hz==null?'Receive only':`${f.tx_shift_hz>=0?'+':''}${f.tx_shift_hz} Hz shift`}</span></div></div>`;
 }
 function renderTracking() {
   const h=state.hardware,target=state.tracking_target,visible=visibleSatellites();
@@ -310,12 +310,30 @@ function renderTracking() {
   $('radioTestToggle').setAttribute('aria-pressed',String(Boolean(h.radio_test_enabled)));
   $('radioTestBanner').classList.toggle('hidden',!h.radio_test_enabled);
   $('radioTestBanner').textContent=h.radio_test_enabled?`Radio connection test in progress · ${h.radio_test_frequency_hz?`MAIN ${mhz(h.radio_test_frequency_hz)} verified`:'Connecting…'} · 145.000 ↔ 145.555 MHz every 2 seconds`:'';
+  renderRotatorTest(h.rotator_test);
+  const trackingNotice=h.error?`Live control stopped: ${h.error} RX/TX frequencies below are calculated only. Correct the issue, then press Start live tracking.`:
+    !h.enabled && !h.radio_test_enabled && target?'Live tracking is off. RX/TX frequencies below are calculated only. Press Start live tracking to send adjustments to your configured equipment.':
+    h.enabled && !state.settings.radio_enabled && target?'Radio adjustments are disabled in Settings. RX/TX frequencies below are calculated only. Enable the radio, save Settings, then start live tracking.':'';
+  $('trackingNotice').textContent=trackingNotice;$('trackingNotice').classList.toggle('hidden',!trackingNotice);
   $('trackingSummary').textContent=h.radio_test_enabled?'Radio connection test active. Live satellite tracking is stopped.':h.enabled?(target?`Tracking ${target.name} · highest current elevation · ${visible.length} above the horizon`:'Tracking is enabled. Waiting for a satellite above the tracking limit.'):'Live adjustments are off. Start live tracking to control your configured equipment.';
   $('liveTarget').innerHTML=target?liveDetails(target):'<p class="subtle">No watched satellite is currently above the tracking limit.</p>';
   const pos=h.rotator_position,command=h.commanded_position;
-  $('equipmentStatus').innerHTML=`<div class="equipment-grid"><div><strong>Rotator · ${esc(h.rotator_status)}</strong><p>Reported: ${pos?`az ${pos.azimuth}° · el ${pos.elevation}°`:'—'}</p><p>Last command: ${command?`az ${command.azimuth}° · el ${command.elevation}°`:'—'}</p></div><div><strong>Radio · ${esc(h.radio_status)}</strong><p>Verified RX: ${mhz(h.radio_rx_hz)}</p><p>Verified TX: ${mhz(h.radio_tx_hz)}</p></div></div>${h.rotator_error?`<p class="equipment-error">Rotator: ${esc(h.rotator_error)}${h.enabled && state.settings.radio_enabled?' Radio control remains enabled.':''}</p>`:''}${h.error?`<p class="equipment-error">${esc(h.error)}</p>`:''}`;
+  $('equipmentStatus').innerHTML=`<div class="equipment-grid"><div><strong>Rotator · ${esc(h.rotator_status)}</strong><p>Reported: ${pos?`az ${pos.azimuth}° · el ${pos.elevation}°`:'—'}</p><p>Last command: ${command?`az ${command.azimuth}° · el ${command.elevation}°`:'—'}</p></div><div><strong>Radio · ${esc(h.radio_status)}</strong><p>Last verified RX: ${mhz(h.radio_rx_hz)}</p><p>Last verified TX: ${mhz(h.radio_tx_hz)}</p><p>${h.radio_verified_at?`Last radio readback: ${formatTime(h.radio_verified_at,true,true)} · ${esc(h.radio_verified_target)}`:'No radio readback yet.'}</p><p>Pass frequency updates: ${h.frequency_updates || 0}</p></div></div>${h.rotator_error?`<p class="equipment-error">Rotator: ${esc(h.rotator_error)}${h.enabled && state.settings.radio_enabled?' Radio control remains enabled.':''}</p>`:''}${h.error?`<p class="equipment-error">${esc(h.error)}</p>`:''}`;
   $('expandedSummary').textContent=`${visible.length} watched satellite${visible.length===1?'':'s'} above the horizon${visible.length?` · highest: ${visible[0].name} at ${visible[0].elevation.toFixed(1)}°`:''}`;
   $('expandedSatellites').innerHTML=visible.length?visible.map((row,i)=>`<article class="expanded-satellite ${i===0?'highest':''}">${liveDetails(row)}</article>`).join(''):'<p>No watched satellite is currently above the horizon. The sky continues to update.</p>';
+}
+function renderRotatorTest(result) {
+  $('rotatorTestResult').classList.toggle('hidden',!result);
+  if(!result)return;
+  $('rotatorTestResult').classList.toggle('test-warning',result.status==='warning');
+  $('rotatorTestResult').classList.toggle('test-error',result.status==='error');
+  $('rotatorTestTitle').textContent=`Rotator connection test ${result.status==='success'?'succeeded':result.status==='warning'?'warning':'failed'}`;
+  $('rotatorTestTime').dateTime=result.tested_at;
+  $('rotatorTestTime').textContent=`Test time: ${formatTime(result.tested_at,true,true)} · ${timeZone==='UTC'?'UTC':'local time'}`;
+  $('rotatorTestDetails').textContent=`Port: ${result.port || 'not configured'} · ${result.baud} baud · Command: C2`;
+  $('rotatorTestMessage').textContent=result.message;
+  const response=result.response?result.response.replace(/\r/g,'\\r').replace(/\n/g,'\\n\n'):(result.command_sent || result.command_attempted?'No response received.':'No command sent.');
+  $('rotatorTestResponse').textContent=`Response to C2:\n${response}`;
 }
 async function refreshPorts(useSaved=false) {
   try {
@@ -368,6 +386,13 @@ $('trackingToggle').addEventListener('click',async()=>{
 $('radioTestToggle').addEventListener('click',async()=>{
   $('radioTestToggle').disabled=true;
   try{await post('/api/radio-test',{enabled:!state.hardware.radio_test_enabled});await refreshState();toast(state.hardware.radio_test_enabled?'Radio connection test started.':'Radio connection test stopped.');}catch(error){toast(error.message);}finally{$('radioTestToggle').disabled=false;}
+});
+$('rotatorTest').addEventListener('click',async()=>{
+  $('rotatorTest').disabled=true;$('rotatorTest').textContent='Testing rotator connection…';
+  try{
+    const reply=await post('/api/rotator-test');state.hardware.rotator_test=reply.result;renderRotatorTest(reply.result);
+    await refreshState();
+  }catch(error){toast(error.message);}finally{$('rotatorTest').disabled=false;$('rotatorTest').textContent='Test rotator connection';}
 });
 function expandSky(){if(!$('skyDialog').open)$('skyDialog').showModal();renderTracking();requestAnimationFrame(drawSky);loadWorldLand();}
 $('sky').addEventListener('click',expandSky);$('expandSky').addEventListener('click',expandSky);

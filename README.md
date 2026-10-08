@@ -252,7 +252,7 @@ connections. You can enable the radio, rotator, or both in Settings.
    to the enabled rotator. In Settings, use **Refresh available serial ports**, select
    the detected port for each enabled device, and save. The two enabled devices
    need different ports. The app lists ports without opening them; no equipment
-   is commanded until you start live tracking or a radio connection test. Close other software using those
+   is commanded until you start live tracking or explicitly test a connection. Close other software using those
    ports first.
 2. For the **GS-232B**, the default is **9600 baud, 8N1**. Match the controller's
    baud rate and azimuth travel configuration. Travel defaults to **360°**; choose
@@ -275,7 +275,14 @@ connections. You can enable the radio, rotator, or both in Settings.
    NOR/REV controls tracking when turning the radio's main dial; the manual does
    not list an off option for NOR/REV. The app enters satellite
    VFO mode for duplex profiles, sets **MAIN for downlink/RX** and **SUB for
-   uplink/TX**, sets each mode, and restores MAIN selection. Leave a satellite's
+   uplink/TX**, sets each mode, and restores MAIN selection. On the first update
+   for each satellite, it reads the actual MAIN/SUB bands after entering the
+   appropriate mode. If the required downlink band is on SUB, it exchanges the
+   bands before setting the frequencies. This also handles returning from the
+   VHF connection test to a UHF-downlink pass and handovers between VHF/UHF
+   satellites. The IC-9700 cannot assign the same band to MAIN and SUB; attempting
+   to tune MAIN onto SUB's band can cause rejection **05 (FA)**.
+   Leave a satellite's
    uplink blank for receive-only VFO tracking. Set required **CTCSS tones** on
    the radio yourself. The app changes tuning/modes and **does not key PTT**.
    [Icom CI-V reference guide](https://www.icomfrance.com/uploads/files/produit/not-IC-9700_ENG_CI-V_3a-en.pdf).
@@ -301,6 +308,37 @@ control and display an error. It stays off until you correct the issue and start
 it again. If the
 connection is lost, the app cannot guarantee delivery of the stop command; a
 failed stop is reported for action at the controller.
+
+The moving **Calculated downlink / RX** and **Calculated uplink / TX** values are
+orbital predictions. They continue updating while live control is off. The
+equipment panel separately shows **Last verified RX/TX**, their radio readback
+time and satellite, and the number of confirmed pass-frequency updates. Serial
+failures appear prominently at the top of the dashboard. After a failure, correct
+the issue and press **Start live tracking** again; calculated values alone do not
+mean the radio has tuned.
+
+## Test the rotator connection
+
+Press **Test rotator connection** at the top of the live monitor. It sends one
+`C2` command, terminated by carriage return, using your **saved rotator port and
+baud rate**. It works independently of the rotator's live-tracking enable
+checkbox and alert pauses. An unconfigured or unavailable port produces a
+visible warning without sending a command.
+
+The result panel shows the **test date/time**, port, baud, **raw C2 reply** and
+decoded azimuth/elevation when valid. Times follow the dashboard's local/UTC
+selection; `\r` and `\n` make the reply's line endings visible. No response within
+0.8 seconds, a malformed reply, or a serial error is reported in the same panel.
+The last result remains visible across dashboard refreshes until another test
+or a program restart.
+
+During live tracking, the query shares the existing rotator connection and is
+serialized with other equipment commands. It preserves live tracking and radio
+updates. Otherwise it opens the configured port for the single query and closes
+it afterwards. The query does not command movement or restart a rotator stopped
+after an error; use **Stop live tracking**, then **Start live tracking** to retry
+live control after correcting the problem. A port currently used by radio
+control cannot also be used for the rotator test.
 
 ## Test the radio connection
 
@@ -484,7 +522,7 @@ on that computer before relying on it.
 
 See [VALIDATION.md](VALIDATION.md) for the full verification record and limits.
 The GitHub Actions workflow runs the offline suite on Windows with Python 3.12
-and 3.14 for pushes and pull requests. It also runs **25 offline dashboard DOM
+and 3.14 for pushes and pull requests. It also runs **30 offline dashboard DOM
 checks** using Node.js and jsdom. Maintainers can run these with `npm ci` followed
 by `npm test` (Node.js 18 or later). Node.js is not required to run the program;
 the map scripts are already bundled. These DOM checks do not replace visual

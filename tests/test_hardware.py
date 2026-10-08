@@ -29,11 +29,13 @@ class Clock:
 class Device:
     def __init__(self, clock, owner, **parameters):
         self.clock, self.owner, self.parameters = clock, owner, parameters
+        self.baudrate = parameters["baudrate"]
         self.port, self.dtr, self.rts = None, True, True
         self.opened, self.closed = False, False
         self.writes, self.write_times, self.buffer = [], [], bytearray()
         self.selected = "main"
         self.frequencies = dict(owner.initial_frequencies)
+        self.satellite = False
 
     def open(self):
         self.opened = True
@@ -62,6 +64,11 @@ class Device:
             if command == self.owner.reject_command:
                 self.buffer.extend(bytes((0xFE, 0xFE, 0xE0, address, 0xFA, 0xFD)))
                 return len(data)
+            if command == 0x16 and payload[:1] == b"\x5a":
+                entering_satellite = payload[1] == 1
+                if entering_satellite and not self.satellite and self.owner.initial_satellite_frequencies is not None:
+                    self.frequencies = dict(self.owner.initial_satellite_frequencies)
+                self.satellite = entering_satellite
             if command == 0x07 and payload in (b"\xd0", b"\xd1"):
                 self.selected = "main" if payload == b"\xd0" else "sub"
             if command == 0x07 and payload == b"\xb0":
@@ -105,7 +112,8 @@ class Factory:
         self.incomplete, self.echo, self.no_ack = False, False, False
         self.reject_command, self.readback_offset = None, 0
         self.initial_frequencies = {"main": 145_500_000, "sub": 435_000_000}
-        self.reject_same_band = False
+        self.initial_satellite_frequencies = None
+        self.reject_same_band = True
         self.rotator_reply = b"AZ=350 EL=020\r\n"
 
     def __call__(self, **parameters):
@@ -402,6 +410,7 @@ class SerialTrackingTests(unittest.TestCase):
         self.assertIn('fresh', self.controller.snapshot()['radio_status'])
 
     def test_receive_only_uses_main_vfo_and_no_sub_frequency(self):
+        self.factory.initial_frequencies = {"main": 435_000_000, "sub": 145_500_000}
         self.settings["satellite_profiles"]["ISS"]["uplink_mhz"] = None
         self.row["doppler"] = doppler(self.settings["satellite_profiles"]["ISS"], 0)
         self.start()

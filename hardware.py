@@ -1,5 +1,6 @@
 """GS-232B and IC-9700 serial tracking, isolated from the orbit/alert threads."""
 from copy import deepcopy
+from datetime import datetime, timezone
 import math
 import re
 import threading
@@ -73,8 +74,9 @@ class TrackingStopped(Exception):
 
 
 class HardwareController:
-    def __init__(self, serial_factory=serial.Serial, ports_provider=available_ports, monotonic=time.monotonic):
+    def __init__(self, serial_factory=serial.Serial, ports_provider=available_ports, monotonic=time.monotonic, utc_clock=None):
         self.serial_factory, self.ports_provider, self.monotonic = serial_factory, ports_provider, monotonic
+        self.utc_clock = utc_clock or (lambda: datetime.now(timezone.utc))
         self.lock = threading.RLock()
         self.io_lock = threading.RLock()
         self.wake, self.stop = threading.Event(), threading.Event()
@@ -92,7 +94,8 @@ class HardwareController:
         self.state = dict(enabled=False, radio_test_enabled=False, radio_test_frequency_hz=None, radio_test_updates=0,
                           error=None, rotator_error=None, target=None, rotator_status="Off", radio_status="Off",
                           rotator_position=None, commanded_position=None, radio_rx_hz=None, radio_tx_hz=None,
-                          direction_updates=0, frequency_updates=0)
+                          radio_verified_at=None, radio_verified_target=None,
+                          direction_updates=0, frequency_updates=0, rotator_test=None)
 
     def start(self):
         self.thread = threading.Thread(target=self._run, name="serial-tracking", daemon=True)
@@ -151,6 +154,78 @@ class HardwareController:
     def snapshot(self):
         with self.lock:
             return deepcopy(self.state)
+
+    def test_rotator(self, settings):
+        # Serialize with tracking so a C2 reply cannot be consumed by another query.
+        # A diagnostic query does not change the live tracking or radio-test session.
+        with self.io_lock:
+            port, baud = settings["rotator_port"], settings["rotator_baud"]
+            result = dict(tested_at=self.utc_clock().isoformat(), port=port or None, baud=baud,
+                          command_attempted=False, command_sent=False, response="", position=None, status="warning", message="")
+            connection, temporary, reply = None, False, bytearray()
+            try:
+                if not port.strip():
+                    result["message"] = "No rotator port is configured. Select a rotator serial port in Settings, then save."
+                    return result
+                if self.stop.is_set():
+                    raise OSError("The application is stopping; the rotator test was cancelled.")
+                with self.lock:
+                    radio_port = self.settings["radio_port"] if self.settings and (self.radio_test_enabled or
+                        (self.enabled and self.settings["radio_enabled"])) else None
+                if any(p and p.casefold() == port.casefold() for p in (radio_port, self.radio.port if self.radio else None)):
+                    result["message"] = "The configured rotator port is in use by radio control. Select a different rotator port in Settings."
+                    return result
+                if self.rotator and self.rotator.port.casefold() == port.casefold():
+                    if self.rotator.baudrate != baud:
+                        result["message"] = "The rotator connection is still using the previous baud rate. Try again after live tracking stops."
+                        return result
+                    connection = self.rotator
+                else:
+                    if port.casefold() not in {p["device"].casefold() for p in self.ports_provider()}:
+                        result["message"] = f"Configured rotator port {port} is unavailable. Connect the interface or choose an available port in Settings."
+                        return result
+                    connection = self._open(port, baud)
+                    temporary = True
+                connection.reset_input_buffer()
+                result["tested_at"] = self.utc_clock().isoformat()
+                result["command_attempted"] = True
+                self._write(connection, b"C2\r")
+                result["command_sent"] = True
+                deadline, position = self.monotonic() + 0.8, None
+                while self.monotonic() < deadline and len(reply) < 256 and not self.stop.is_set():
+                    reply.extend(connection.read_until(b"\n", 256 - len(reply)))
+                    if reply.endswith((b"\r", b"\n")):
+                        try:
+                            position = parse_rotator_position(bytes(reply))
+                            break
+                        except OSError:
+                            pass
+                if self.stop.is_set():
+                    raise OSError("The application is stopping; the rotator test was cancelled.")
+                if not reply:
+                    raise OSError("No response to C2 within 0.8 seconds. Check the rotator port, baud rate and controller.")
+                if position is None:
+                    if len(reply) >= 256:
+                        raise OSError("C2 response reached the 256-byte limit. Check the rotator port and baud rate.")
+                    parse_rotator_position(bytes(reply))  # Keep the parser's specific diagnostic.
+                    raise OSError("Incomplete C2 response (missing line ending). Check the rotator port and baud rate.")
+                result.update(status="success", position=position,
+                              message=f"Reported azimuth {position['azimuth']}° · elevation {position['elevation']}°.")
+                self._state(rotator_position=position)
+                if connection is self.rotator:
+                    self.last_position_query = self.monotonic()
+                return result
+            except Exception as error:
+                result.update(status="error", message=str(error))
+                return result
+            finally:
+                result["response"] = bytes(reply).decode("ascii", errors="backslashreplace")
+                if temporary:
+                    try:
+                        connection.close()
+                    except Exception as error:
+                        result.update(status="error", message=f"{result['message']} Could not close the test port: {error}")
+                self._state(rotator_test=deepcopy(result))
 
     def _state(self, **values):
         with self.lock:
@@ -252,6 +327,19 @@ class HardwareController:
             return
         raise OSError("No valid GS-232B C2 position reply. Check port, baud and controller.")
 
+    def _prepare_main_band(self, downlink_hz):
+        # IC-9700 MAIN and SUB cannot occupy the same band. Frequency command 05
+        # cannot move MAIN onto a band already assigned to SUB; exchange them first.
+        self._civ(0x07, b"\xd0")
+        main_hz = decode_frequency(self._civ(0x03, reply_command=0x03))
+        wanted = radio_band(downlink_hz)
+        if radio_band(main_hz) != wanted:
+            self._civ(0x07, b"\xd1")
+            sub_hz = decode_frequency(self._civ(0x03, reply_command=0x03))
+            self._civ(0x07, b"\xd0")
+            if radio_band(sub_hz) == wanted:
+                self._civ(0x07, b"\xb0")
+
     def _tune(self, target, settings):
         freq, profile_ = target["doppler"], settings["satellite_profiles"][target["name"]]
         rx, tx = freq["rx_hz"], freq["tx_hz"]
@@ -274,9 +362,11 @@ class HardwareController:
         if first:
             self._civ(0x16, bytes((0x5A, int(tx is not None))))
             self._civ(0x07)  # VFO mode; satellite memories must not be overwritten.
+            self._prepare_main_band(rx)
+        else:
+            self._civ(0x07, b"\xd0")
         # MAIN is downlink/RX and SUB is uplink/TX in IC-9700 satellite mode.
         # Command 25 cannot address SUB; use 07 D0/D1 followed by 05 instead.
-        self._civ(0x07, b"\xd0")
         if first:
             self._civ(0x06, bytes((MODES[modes[0]], 1)))
         if change_rx:
@@ -297,6 +387,7 @@ class HardwareController:
         self.last_radio = (identity, rx if change_rx else previous_rx, tx if change_tx else previous_tx)
         self._state(radio_status="Tracking · frequencies verified", radio_rx_hz=verified_rx,
                     radio_tx_hz=verified_tx if tx is not None else None,
+                    radio_verified_at=self.utc_clock().isoformat(), radio_verified_target=target["name"],
                     frequency_updates=self.snapshot()["frequency_updates"] + 1)
 
     def _test_radio(self, settings):
@@ -306,15 +397,7 @@ class HardwareController:
         if not self.radio_test_ready:
             self._civ(0x16, b"\x5a\x00")  # Test the MAIN VFO independently of satellite mode.
             self._civ(0x07)
-            self._civ(0x07, b"\xd0")
-            main_hz = decode_frequency(self._civ(0x03, reply_command=0x03))
-            if radio_band(main_hz) != 0:
-                self._civ(0x07, b"\xd1")
-                sub_hz = decode_frequency(self._civ(0x03, reply_command=0x03))
-                self._civ(0x07, b"\xd0")
-                if radio_band(sub_hz) == 0:
-                    # The IC-9700 cannot use 144 MHz on MAIN and SUB together.
-                    self._civ(0x07, b"\xb0")
+            self._prepare_main_band(RADIO_TEST_FREQUENCIES[0])
             self.radio_test_ready = True
         sent_at = self.monotonic()
         if self.next_radio_test_at is not None and sent_at < self.next_radio_test_at:
@@ -330,6 +413,7 @@ class HardwareController:
         # Schedule from the write, so acknowledgement time does not extend each interval.
         self.next_radio_test_at = sent_at + RADIO_TEST_INTERVAL
         self._state(radio_status="Connection test · frequency verified", radio_rx_hz=verified, radio_tx_hz=None,
+                    radio_verified_at=self.utc_clock().isoformat(), radio_verified_target="Radio connection test",
                     radio_test_frequency_hz=verified, radio_test_updates=self.snapshot()["radio_test_updates"] + 1)
 
     def _halt_rotator(self):

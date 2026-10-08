@@ -22,7 +22,7 @@ async function dashboard(t, changes={}) {
       ground_latitude:48+index*2,ground_longitude:-8+index*2,satellite_height_km:800,
       detail:'Fresh test position',tle_age_days:.1,next_pass:null,
       doppler:{rx_hz:437801000,tx_hz:145989000,rx_shift_hz:1000,tx_shift_hz:-1000}})),
-    hardware:{enabled:false,radio_test_enabled:false,radio_test_frequency_hz:null,error:null,rotator_status:'Off',radio_status:'Off',rotator_position:null,
+    hardware:{enabled:false,radio_test_enabled:false,radio_test_frequency_hz:null,rotator_test:null,error:null,rotator_status:'Off',radio_status:'Off',rotator_position:null,
       commanded_position:null,radio_rx_hz:null,radio_tx_hz:null},...changes};
   const updateTarget=()=>{server.tracking_target=clone(server.satellites.filter(row=>row.status==='tracking' && row.elevation>=0).sort((a,b)=>b.elevation-a.elevation)[0] || null);};
   updateTarget();
@@ -60,6 +60,14 @@ async function dashboard(t, changes={}) {
     } else if(url==='/api/radio-test'){
       if(body.enabled && !ports.some(port=>port.device===server.settings.radio_port)){ok=false;result={error:'Select an available radio serial port in Settings, then save.'};}
       else{server.hardware.enabled=false;server.hardware.radio_test_enabled=body.enabled;server.hardware.radio_test_frequency_hz=null;result={ok:true};}
+    } else if(url==='/api/rotator-test'){
+      const port=server.settings.rotator_port,available=ports.some(row=>row.device===port);
+      const diagnostic=server.next_rotator_test_result || {tested_at:now,port:port || null,baud:server.settings.rotator_baud,
+        command_sent:available,response:available?'AZ=350 EL=020\r\n':'',position:available?{azimuth:350,elevation:20}:null,
+        status:available?'success':'warning',message:!port?'No rotator port is configured. Select a rotator serial port in Settings, then save.':
+          available?'Reported azimuth 350° · elevation 20°.':`Configured rotator port ${port} is unavailable. Connect the interface or choose an available port in Settings.`};
+      server.hardware.rotator_test=diagnostic;if(diagnostic.position)server.hardware.rotator_position=diagnostic.position;
+      result={ok:true,result:diagnostic};
     } else if(url==='/api/test-alert'){
       server.sound_serial++;server.alerts=[{id:'test-audio',name:'TEST',test:true,active:true,acknowledged:false,created_at:now,message:'TEST ALERT'}];result={ok:true};
     } else if(url==='/api/acknowledge'){
@@ -279,6 +287,57 @@ test('radio test failures clear the progress label and restore controls while di
   assert.equal($('trackingToggle').disabled,false);assert.match($('equipmentStatus').textContent,/did not acknowledge/);
 });
 
+test('rotator test displays raw C2 response, port, baud and test time without changing live tracking',async t=>{
+  const {$,w,server,refresh,requests}=await dashboard(t);server.settings.rotator_port='COM10';server.settings.rotator_baud=4800;server.hardware.enabled=true;await refresh();
+  assert.equal($('rotatorTest').textContent,'Test rotator connection');assert.ok($('rotatorTestResult').classList.contains('hidden'));
+  $('rotatorTest').click();await flush();
+  assert.equal(requests.filter(row=>row.url==='/api/rotator-test').length,1);
+  assert.ok(!$('rotatorTestResult').classList.contains('hidden'));assert.match($('rotatorTestTitle').textContent,/succeeded/);
+  assert.match($('rotatorTestDetails').textContent,/COM10.*4800 baud.*C2/);
+  assert.match($('rotatorTestResponse').textContent,/AZ=350 EL=020\\r\\n/);
+  assert.equal($('rotatorTestTime').dateTime,server.hardware.rotator_test.tested_at);
+  assert.match($('rotatorTestTime').textContent,/Test time:.*\d\d:\d\d:\d\d.*local time/);
+  assert.equal($('rotatorTestResult').getAttribute('role'),'status');assert.equal(server.hardware.enabled,true);
+  assert.match($('equipmentStatus').textContent,/Reported: az 350° · el 20°/);
+  await refresh();assert.match($('rotatorTestResponse').textContent,/AZ=350 EL=020/);
+  $('timeZone').value='UTC';$('timeZone').dispatchEvent(new w.Event('change'));await flush();
+  assert.match($('rotatorTestTime').textContent,/UTC/);
+});
+
+test('missing and unavailable rotator ports leave a visible warning with no command sent',async t=>{
+  const {$,server,refresh}=await dashboard(t);
+  for(const port of ['', 'COM99']){
+    server.settings.rotator_port=port;await refresh();$('rotatorTest').click();await flush();
+    assert.ok(!$('rotatorTestResult').classList.contains('hidden'));assert.ok($('rotatorTestResult').classList.contains('test-warning'));
+    assert.match($('rotatorTestMessage').textContent,port?/COM99 is unavailable/:/No rotator port is configured/);
+    assert.match($('rotatorTestResponse').textContent,/No command sent/);
+    assert.equal($('rotatorTest').disabled,false);assert.equal($('rotatorTest').textContent,'Test rotator connection');
+  }
+});
+
+test('failed C2 test preserves malformed text safely and distinguishes no response',async t=>{
+  const {$,server,refresh}=await dashboard(t);server.hardware.radio_test_enabled=true;await refresh();
+  for(const response of ['<img src=x onerror="bad()">\r\n','']){
+    server.next_rotator_test_result={tested_at:server.now,port:'COM10',baud:9600,status:'error',command_sent:true,response,position:null,
+      message:response?'Rotator did not return an azimuth/elevation reply to C2.':'No response to C2 within 0.8 seconds.'};
+    $('rotatorTest').click();await flush();
+    assert.ok($('rotatorTestResult').classList.contains('test-error'));
+    assert.equal($('rotatorTestResponse').querySelector('img'),null);
+    assert.ok($('rotatorTestResponse').textContent.includes(response?'<img src=x onerror="bad()">':'No response received.'));
+    assert.equal(server.hardware.radio_test_enabled,true);assert.ok(!$('radioTestBanner').classList.contains('hidden'));
+  }
+});
+
+test('rotator test button stays disabled while waiting and accepts another test after completion',async t=>{
+  const {$,w,server,refresh,requests}=await dashboard(t);server.settings.rotator_port='COM10';await refresh();
+  const fetch=w.fetch;let release;
+  w.fetch=async(url,options)=>{if(url==='/api/rotator-test')await new Promise(resolve=>{release=resolve;});return fetch(url,options);};
+  $('rotatorTest').click();await flush();assert.equal($('rotatorTest').disabled,true);assert.equal($('rotatorTest').textContent,'Testing rotator connection…');
+  $('rotatorTest').click();await refresh();assert.equal($('rotatorTest').disabled,true);release();await flush();
+  assert.equal(requests.filter(row=>row.url==='/api/rotator-test').length,1);assert.equal($('rotatorTest').disabled,false);
+  w.fetch=fetch;$('rotatorTest').click();await flush();assert.equal(requests.filter(row=>row.url==='/api/rotator-test').length,2);
+});
+
 test('Windows notifications accompany the in-app banner; closing them leaves an acknowledgement available on Settings',async t=>{
   const { $,w,server,refresh }=await dashboard(t),notifications=[];
   w.Notification=class {static permission='granted';constructor(title,options){this.title=title;this.options=options;notifications.push(this);}close(){this.closed=true;}};
@@ -321,6 +380,22 @@ test('rotator C2 errors remain visible while radio tracking and both verified fr
   assert.equal($('trackingToggle').textContent,'Stop live tracking');assert.match($('equipmentStatus').textContent,/C2 position reply/);
   assert.match($('equipmentStatus').textContent,/Radio control remains enabled/);assert.match($('equipmentStatus').textContent,/437\.801000 MHz/);
   assert.match($('equipmentStatus').textContent,/145\.989000 MHz/);
+});
+
+test('calculated pass frequencies are labelled and a CI-V failure is prominent without claiming radio readback',async t=>{
+  const {$,server,refresh}=await dashboard(t);
+  assert.match($('liveTarget').textContent,/Calculated downlink \/ RX/);assert.match($('liveTarget').textContent,/Calculated uplink \/ TX/);
+  assert.match($('trackingNotice').textContent,/Live tracking is off.*calculated only.*Start live tracking/);
+  assert.match($('equipmentStatus').textContent,/No radio readback yet/);
+  server.hardware.error='IC-9700 rejected command 05 (FA). Check satellite/VFO mode and supported frequency.';
+  server.satellites.find(row=>row.name==='ISS').doppler.rx_hz+=300;await refresh();
+  assert.ok(!$('trackingNotice').classList.contains('hidden'));assert.match($('trackingNotice').textContent,/Live control stopped.*command 05 \(FA\)/);
+  assert.match($('liveTarget').textContent,/437.801300 MHz/);assert.match($('equipmentStatus').textContent,/No radio readback yet/);
+  Object.assign(server.hardware,{error:null,enabled:true,radio_status:'Tracking · frequencies verified',radio_rx_hz:437801300,radio_tx_hz:145989000,
+    radio_verified_at:server.now,radio_verified_target:'ISS',frequency_updates:4});await refresh();
+  assert.ok($('trackingNotice').classList.contains('hidden'));assert.match($('equipmentStatus').textContent,/Last radio readback:.*ISS/);
+  assert.match($('equipmentStatus').textContent,/Pass frequency updates: 4/);
+  server.settings.radio_enabled=false;await refresh();assert.match($('trackingNotice').textContent,/Radio adjustments are disabled/);
 });
 
 test('maximum Windows volume is enabled by default and can be disabled without acknowledging an alert',async t=>{
