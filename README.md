@@ -36,6 +36,87 @@ The default ground station and satellite list are:
 - Observer height defaults to **0 metres above sea level**; set your station's
   actual height in Settings. Existing saved preferences are retained.
 
+## Start the server and open the application
+
+Once installation is complete, start the Python server whenever you want to use
+Satellite Alert. Run commands from the project folder containing
+`satellite_alert.py`, `Start.cmd` and `README.md`.
+
+### Windows: start with the launcher
+
+Double-click **Start.cmd** in File Explorer. Alternatively, open the project
+folder in PowerShell and run:
+
+```powershell
+.\Start.cmd
+```
+
+The launcher starts the Python server using the project's installed `.venv`
+environment and opens the application in your default browser. **Keep its
+terminal window open** while you want monitoring, alerts and equipment control
+to run. If `.venv` has not been created yet, follow the
+[installation steps below](#install-on-another-windows-computer) first.
+
+### Start Python directly
+
+On Windows, the equivalent command is:
+
+```powershell
+.\.venv\Scripts\python.exe satellite_alert.py
+```
+
+On macOS or Linux, after installing the dependencies:
+
+```sh
+.venv/bin/python satellite_alert.py
+```
+
+Choose one start method; only one server can use the same port at a time.
+The server prints its dashboard address when it is ready.
+
+### Open or reopen the application
+
+On the **same computer running the Python server**, open your browser and visit
+[http://127.0.0.1:8765/](http://127.0.0.1:8765/). Use this address if the browser
+did not open automatically, or to reopen a dashboard tab you closed earlier.
+The server must already be running for the page to load.
+
+To start the server without opening a browser automatically, use:
+
+```powershell
+.\Start.cmd --no-browser
+```
+
+Or add `--no-browser` to either direct Python command above. Then open the
+dashboard address yourself. If you need a different port, for example because
+8765 is already in use, run:
+
+```powershell
+.\Start.cmd --port 8766
+```
+
+Then use [http://127.0.0.1:8766/](http://127.0.0.1:8766/). The direct Python
+commands also accept `--port 8766`.
+
+### Stop the Python server
+
+Use either of these methods:
+
+- **In the application:** open **How it works** in the left menu, scroll to the
+  bottom and click **Stop app**.
+- **In the server terminal:** click the terminal window that is running
+  Satellite Alert and press **Ctrl+C**.
+
+Both methods shut down the Python server and stop background monitoring,
+orbital-data downloads, alerts and serial equipment control. The dashboard
+will no longer receive updates until you start the server again.
+
+**Closing the browser tab does not stop the server.** Similarly, **Pause alerts**
+and **Stop live tracking** control those features while leaving the server
+running. To restart after stopping the server, run **Start.cmd** or the direct
+Python command again, then reopen or reload the dashboard. Live equipment
+tracking starts off after a restart; press **Start live tracking** when ready.
+
 ## Install on another Windows computer
 
 1. On [the repository page](https://github.com/uham999/SatelliteAlert), choose
