@@ -11,6 +11,7 @@ const flush = async () => {for (let i=0;i<8;i++) await new Promise(resolve=>setI
 
 async function dashboard(t, changes={}) {
   const settings=JSON.parse(fs.readFileSync(path.join(root,'settings.example.json'),'utf8'));
+  settings.satellite_notifications_paused=Object.fromEntries(settings.satellites.map(name=>[name,false]));
   const now=new Date().toISOString(),errors=[],requests=[],paint=[];
   const elevations={'RS-44':12,'ISS':62,'FO-29':23,'AO-73':-5,'JO-97':-12,'SO-50':-20,'AO-123':-40};
   let server={token:'offline-test-token',settings,now,last_tick:now,forecast_at:now,
@@ -51,8 +52,12 @@ async function dashboard(t, changes={}) {
     else if(url==='/world-land.json')result=JSON.parse(fs.readFileSync(path.join(root,'static/world-land.json'),'utf8'));
     else if(url==='/api/ports')result={ports,default_profiles:settings.satellite_profiles};
     else if(url==='/api/settings'){
-      server.settings={...server.settings,...body};server.hardware.enabled=false;
+      const pauses={...server.settings.satellite_notifications_paused,...body.satellite_notifications_paused};
+      server.settings={...server.settings,...body};server.settings.satellite_notifications_paused=Object.fromEntries(server.settings.satellites.map(name=>[name,Boolean(pauses[name])]));
+      if(Object.keys(body).some(key=>key!=='satellite_notifications_paused'))server.hardware.enabled=false;
       server.satellites=server.satellites.filter(row=>server.settings.satellites.includes(row.name));updateTarget();result={ok:true};
+    } else if(url==='/api/profile-lookup'){
+      result=server.lookupReply?await server.lookupReply(body.name):{status:'not_found',matches:[],message:'No matching frequency profile was found. Enter the downlink, uplink, receive mode and transmit mode manually.'};
     } else if(url==='/api/tracking'){
       if(body.enabled && server.hardware.radio_test_enabled){ok=false;result={error:'Stop the radio connection test before starting live tracking.'};}
       else if(body.enabled && (!server.settings.rotator_port || !server.settings.radio_port)){ok=false;result={error:'Select an available serial port in Settings, then save.'};}
@@ -165,6 +170,90 @@ test('satellite editor creates, reads, updates, renames and deletes a custom pro
   assert.ok(!server.settings.satellites.includes('12345'));assert.equal(server.settings.satellite_profiles['12346'].downlink_mhz,437.91);
   $('profileList').querySelector('[data-delete="12346"]').click();await flush();
   assert.ok(!server.settings.satellites.includes('12346'));assert.equal($('profileList').querySelectorAll('[data-edit]').length,7);
+});
+
+test('per-satellite checkbox saves immediately without stopping equipment or removing the satellite',async t=>{
+  const {$,w,server,requests,refresh}=await dashboard(t);server.hardware.enabled=true;await refresh();
+  const before=clone(server.settings.satellites),pause=$('profileList').querySelector('[data-pause-satellite="ISS"]');
+  assert.equal(pause.checked,false);pause.checked=true;pause.dispatchEvent(new w.Event('change'));await flush();
+  assert.equal(server.settings.satellite_notifications_paused.ISS,true);assert.equal(server.hardware.enabled,true);
+  assert.deepEqual(server.settings.satellites,before);assert.match($('fleet').textContent,/Notifications paused/);
+  assert.deepEqual(requests.find(row=>row.url==='/api/settings').body,{satellite_notifications_paused:{ISS:true}});
+  const resume=$('profileList').querySelector('[data-pause-satellite="ISS"]');resume.checked=false;resume.dispatchEvent(new w.Event('change'));await flush();
+  assert.equal(server.settings.satellite_notifications_paused.ISS,false);assert.equal(server.hardware.enabled,true);
+});
+
+test('new satellites default to notifications on and editing or renaming keeps their selected pause',async t=>{
+  const {$,server}=await dashboard(t);$('addSatellite').click();assert.equal($('profilePause').checked,false);
+  $('profileName').value='12345';$('saveSatellite').click();await flush();assert.equal(server.settings.satellite_notifications_paused['12345'],false);
+  $('profileList').querySelector('[data-edit="12345"]').click();$('profilePause').checked=true;$('saveSatellite').click();await flush();
+  $('profileList').querySelector('[data-edit="12345"]').click();assert.equal($('profilePause').checked,true);
+  $('profileName').value='12346';$('saveSatellite').click();await flush();assert.equal(server.settings.satellite_notifications_paused['12346'],true);
+  assert.equal(server.settings.satellite_notifications_paused['12345'],undefined);
+  $('profileList').querySelector('[data-delete="12346"]').click();await flush();assert.equal(server.settings.satellite_notifications_paused['12346'],undefined);
+});
+
+function lookupMatch(label='AO-91',rx=145.960,tx=435.250,rxMode='FM',txMode='FM'){
+  return {label,profile:{downlink_mhz:rx,uplink_mhz:tx,downlink_mode:rxMode,uplink_mode:txMode,notes:'Example lookup note.',source:'https://www.amsat.org/live-fm-satellites/'}};
+}
+
+test('new satellite name looks up all radio fields and saves editable values with source attribution',async t=>{
+  const {$,w,server,requests}=await dashboard(t);server.lookupReply=async()=>({status:'found',matches:[lookupMatch()],message:'Found in AMSAT.'});
+  $('addSatellite').click();$('profileName').value='AO-91';$('profileName').dispatchEvent(new w.Event('change'));await flush();
+  assert.equal($('profileRx').value,'145.96');assert.equal($('profileTx').value,'435.25');
+  assert.equal($('profileRxMode').value,'FM');assert.equal($('profileTxMode').value,'FM');
+  assert.match($('profileLookupStatus').textContent,/Review/);assert.equal($('profileLookupSource').querySelector('a').href,'https://www.amsat.org/live-fm-satellites/');
+  $('profileRx').value='145.961';$('profileRx').dispatchEvent(new w.Event('input'));$('saveSatellite').click();await flush();
+  assert.equal(server.settings.satellite_profiles['AO-91'].downlink_mhz,145.961);
+  assert.equal(server.settings.satellite_profiles['AO-91'].source,'https://www.amsat.org/live-fm-satellites/');
+  assert.equal(server.settings.satellite_notifications_paused['AO-91'],false);
+  assert.equal(requests.filter(row=>row.url==='/api/profile-lookup').length,1);
+});
+
+test('no match explains manual entry and changing the name clears earlier automatic values',async t=>{
+  const {$,w,server}=await dashboard(t);server.lookupReply=async name=>name==='AO-91'?{status:'found',matches:[lookupMatch()],message:'Found.'}:
+    {status:'not_found',matches:[],message:'No match was found. Enter the downlink, uplink, receive mode and transmit mode manually.'};
+  $('addSatellite').click();$('profileName').value='AO-91';$('profileName').dispatchEvent(new w.Event('change'));await flush();
+  $('profileName').value='UNKNOWN';$('profileName').dispatchEvent(new w.Event('input'));$('profileName').dispatchEvent(new w.Event('change'));await flush();
+  assert.equal($('profileRx').value,'');assert.equal($('profileTx').value,'');assert.match($('profileLookupStatus').textContent,/No match.*manually/);
+  $('profileRx').value='145.8';$('profileRx').dispatchEvent(new w.Event('input'));$('saveSatellite').click();await flush();
+  assert.equal(server.settings.satellite_profiles.UNKNOWN.downlink_mhz,145.8);
+});
+
+test('multiple operating profiles require a choice before applying frequencies',async t=>{
+  const {$,w,server}=await dashboard(t);server.lookupReply=async()=>({status:'found',matches:[lookupMatch('AO-7 Mode A',29.45,145.9,'USB','USB'),lookupMatch('AO-7 Mode B',145.95,432.15,'USB','LSB')],message:'Choose an operating profile.'});
+  $('addSatellite').click();$('profileName').value='AO-7';$('profileName').dispatchEvent(new w.Event('change'));await flush();
+  assert.ok(!$('profileLookupChoices').classList.contains('hidden'));assert.equal($('profileRx').value,'');
+  $('profileLookupChoice').value='1';$('profileLookupChoice').dispatchEvent(new w.Event('change'));
+  assert.equal($('profileRx').value,'145.95');assert.equal($('profileTx').value,'432.15');assert.equal($('profileTxMode').value,'LSB');
+});
+
+test('late lookups preserve manual input and cannot overwrite a different name or reopened editor',async t=>{
+  const {$,w,server}=await dashboard(t);let finish;
+  server.lookupReply=()=>new Promise(resolve=>{finish=resolve;});
+  $('addSatellite').click();$('profileName').value='AO-91';$('profileName').dispatchEvent(new w.Event('change'));await flush();
+  $('profileRx').value='145.123';$('profileRx').dispatchEvent(new w.Event('input'));
+  finish({status:'found',matches:[lookupMatch()],message:'Found.'});await flush();
+  assert.equal($('profileRx').value,'145.123');assert.equal($('profileTx').value,'435.25');assert.match($('profileLookupStatus').textContent,/manually.*kept/);
+  $('lookupSatellite').click();await flush();const oldFinish=finish;
+  $('cancelSatellite').click();$('addSatellite').click();$('profileName').value='OTHER';
+  oldFinish({status:'found',matches:[lookupMatch()],message:'Old result.'});await flush();assert.equal($('profileRx').value,'');assert.equal($('profileTx').value,'');
+});
+
+test('a failed lookup explains manual entry and the retry button can recover',async t=>{
+  const {$,w,server}=await dashboard(t);server.lookupReply=async()=>{throw new Error('Offline');};
+  $('addSatellite').click();$('profileName').value='AO-91';$('profileName').dispatchEvent(new w.Event('change'));await flush();
+  assert.match($('profileLookupStatus').textContent,/unavailable.*manually/);
+  server.lookupReply=async()=>({status:'found',matches:[lookupMatch()],message:'Found.'});$('lookupSatellite').click();await flush();assert.equal($('profileRx').value,'145.96');
+});
+
+test('a paused satellite creates no browser notification or acknowledgement banner',async t=>{
+  const {$,w,server,refresh}=await dashboard(t);const notifications=[];
+  w.Notification=class {static permission='granted';constructor(title){notifications.push(title);}};
+  server.settings.satellite_notifications_paused.ISS=true;
+  server.alerts=[{id:'paused-pass',name:'ISS',test:false,active:true,acknowledged:false,message:'Example pass',created_at:server.now}];await refresh();
+  assert.equal(notifications.length,0);assert.ok($('alertBanner').classList.contains('hidden'));
+  server.settings.satellite_notifications_paused.ISS=false;await refresh();assert.equal(notifications.length,1);assert.ok(!$('alertBanner').classList.contains('hidden'));
 });
 
 test('duplicate names and an unfinished profile edit are blocked without saving global settings',async t=>{

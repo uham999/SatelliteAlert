@@ -1,7 +1,7 @@
 """Run a local satellite dashboard with a continuous Python alert monitor.
 
 Usage: python satellite_alert.py [--no-browser] [--port 8765]
-The web interface is local; network access is only needed to refresh AMSAT TLEs.
+The web interface is local; network access refreshes AMSAT TLEs and looks up radio profiles.
 """
 from __future__ import annotations
 
@@ -23,11 +23,12 @@ from urllib.request import Request, urlopen
 import webbrowser
 
 from orbits import (
-    DEFAULT_SETTINGS, EARLY_ALERT_MINUTES, TLE_URL, OrbitCalculator, already_alerted, alert_due, alert_time,
+    CATALOGUE, DEFAULT_SETTINGS, EARLY_ALERT_MINUTES, TLE_URL, OrbitCalculator, already_alerted, alert_due, alert_time,
     iso, parse_tles, resolve_name, utc_now, validate_settings, settings_for_startup,
 )
 from hardware import HardwareController, available_ports, select_target
 from profiles import doppler, DEFAULT_PROFILES
+from frequency_lookup import FrequencyLookup
 from windows_audio import maximize_windows_volume
 
 ROOT = Path(__file__).resolve().parent
@@ -110,6 +111,7 @@ class Monitor:
         self.calculator = OrbitCalculator()
         self.sound = SoundPlayer()
         self.hardware = HardwareController()
+        self.frequency_lookup = FrequencyLookup()
         self.tracking_target = None
         self.stop = threading.Event()
         self.wake = threading.Event()
@@ -223,10 +225,12 @@ class Monitor:
     def save_settings(self, values):
         with self.lock:
             combined = {**self.settings, **values}
+            if isinstance(values.get("satellite_notifications_paused"), dict):
+                combined["satellite_notifications_paused"] = {**self.settings["satellite_notifications_paused"], **values["satellite_notifications_paused"]}
             if "latitude" in values or "longitude" in values:
                 combined["location_note"] = ""
             settings = validate_settings(combined)
-            recalculate = any(settings[key] != self.settings[key] for key in settings if key not in PAUSE_SETTINGS | HARDWARE_SETTINGS | {"earth_overlay", "windows_maximum_volume"})
+            recalculate = any(settings[key] != self.settings[key] for key in settings if key not in PAUSE_SETTINGS | HARDWARE_SETTINGS | {"earth_overlay", "windows_maximum_volume", "satellite_notifications_paused"})
             hardware_changed = any(settings[key] != self.settings[key] for key in HARDWARE_SETTINGS | {"latitude", "longitude", "observer_height_m", "minimum_elevation", "satellites"})
             pause_changed = any(settings[key] != self.settings[key] for key in PAUSE_SETTINGS)
             if hardware_changed:
@@ -248,6 +252,22 @@ class Monitor:
             self._update_tracking()
         if recalculate:
             self.wake.set()
+
+    def lookup_profile(self, name):
+        if not isinstance(name, str):
+            raise ValueError("Enter a satellite name or NORAD number.")
+        name = validate_settings({"satellites": [name]})["satellites"][0]
+        with self.lock:
+            record = resolve_name(name, self.records)
+            aliases = [record.name] if record else []
+            norad = record.norad if record else CATALOGUE.get(name)
+            if name.isdigit():
+                norad = int(name)
+            aliases.extend(alias for alias, number in CATALOGUE.items() if number == norad)
+        return self.frequency_lookup.lookup(name, aliases)
+
+    def notifications_paused(self, name):
+        return self.settings["satellite_notifications_paused"].get(name, False)
 
     def _persist_alerts(self):
         cutoff = self.clock() - timedelta(days=3)
@@ -429,7 +449,7 @@ class Monitor:
             self._update_tracking()
             if not self.paused:
                 for pass_ in self.passes:
-                    if pass_.name not in ready or not alert_due(pass_, self.settings["alert_mode"], now) or already_alerted(pass_, self.ledger):
+                    if self.notifications_paused(pass_.name) or pass_.name not in ready or not alert_due(pass_, self.settings["alert_mode"], now) or already_alerted(pass_, self.ledger):
                         continue
                     elevation = rows[pass_.name].get("elevation", -90)
                     # Guard an outdated forecast after a manoeuvre/new download.
@@ -443,7 +463,8 @@ class Monitor:
                     new_alerts.append(alert)
                 if new_alerts:
                     self._persist_alerts()
-            active = [alert for alert in self.alerts if not alert["acknowledged"] and datetime.fromisoformat(alert["expires_at"]) > now]
+            active = [alert for alert in self.alerts if not alert["acknowledged"] and datetime.fromisoformat(alert["expires_at"]) > now
+                      and (alert["test"] or not self.notifications_paused(alert["name"]))]
             if not self.paused and active and self.settings["sound_enabled"]:
                 if new_alerts or time.monotonic() - self.last_sound_at >= self.settings["repeat_sound_seconds"]:
                     self._ring()
@@ -503,17 +524,20 @@ class Monitor:
         with self.lock:
             now = self.clock()
             self._update_pause(now)
-            windows = [pass_.to_json(self.settings["alert_mode"]) for pass_ in self.passes if pass_.threshold_set > now]
+            windows = [{**pass_.to_json(self.settings["alert_mode"]), "notifications_paused": self.notifications_paused(pass_.name)}
+                       for pass_ in self.passes if pass_.threshold_set > now]
             pending = [pass_.to_json(self.settings["alert_mode"]) for pass_ in self.passes
                        if pass_.threshold_set > now and not already_alerted(pass_, self.ledger)]
             pending.sort(key=lambda pass_: pass_["alert_at"])
             rows = deepcopy(self.satellite_status)
             for row in rows:
                 row["next_pass"] = next((pass_ for pass_ in pending if pass_["name"] == row["name"]), None)
-            rows.sort(key=lambda row: (row["next_pass"] is None, row["next_pass"]["alert_at"] if row["next_pass"] else ""))
+                row["notifications_paused"] = self.notifications_paused(row["name"])
+            rows.sort(key=lambda row: (row["notifications_paused"], row["next_pass"] is None, row["next_pass"]["alert_at"] if row["next_pass"] else ""))
             alerts = deepcopy(self.alerts)
             for alert in alerts:
-                alert["active"] = not alert["acknowledged"] and datetime.fromisoformat(alert["expires_at"]) > now
+                alert["notifications_paused"] = not alert["test"] and self.notifications_paused(alert["name"])
+                alert["active"] = not alert["acknowledged"] and not alert["notifications_paused"] and datetime.fromisoformat(alert["expires_at"]) > now
             return dict(now=iso(now), settings=dict(self.settings), satellites=rows, passes=windows,
                         tracking_target=deepcopy(self.tracking_target), hardware=self.hardware.snapshot(),
                         alerts=alerts[::-1], fetched_at=iso(self.fetched_at), next_refresh_at=iso(self.next_refresh()),
@@ -608,6 +632,8 @@ class Handler(BaseHTTPRequestHandler):
             monitor = self.server.monitor
             if self.path == "/api/settings":
                 monitor.save_settings(data)
+            elif self.path == "/api/profile-lookup":
+                return self._send(200, monitor.lookup_profile(data.get("name")))
             elif self.path == "/api/refresh":
                 monitor.refresh()
             elif self.path == "/api/acknowledge":

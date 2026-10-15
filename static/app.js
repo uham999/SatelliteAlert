@@ -4,7 +4,11 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':
 let state = null, selectedPass = null, selectedName = null, showAll = false, timeZone = localStorage.getItem('satellite-time-zone') || 'local';
 let audioContext = null, browserSound = false, soundSerial = null, notificationIds = new Set(), disconnected = false;
 let view = 'dashboard', toastTimer;
-let serialPorts=[], defaultProfiles={}, editingSatellite=null, profileEditorOpen=false;
+let serialPorts=[], editingSatellite=null, profileEditorOpen=false;
+let profileLookupTimer, profileLookupGeneration=0, lastLookupName='', profileMatches=[], profileSource='';
+let automaticProfileValues={}, manualProfileFields=new Set();
+const profileFields={profileRx:'downlink_mhz',profileTx:'uplink_mhz',profileRxMode:'downlink_mode',profileTxMode:'uplink_mode',profileNotes:'notes'};
+const profileEmpty={profileRx:'',profileTx:'',profileRxMode:'USB',profileTxMode:'LSB',profileNotes:''};
 let worldLand=null, worldLandRequest=null;
 const earthImage = new Image();
 const earlyAlertMinutes = {before_horizon_5:5, before_horizon:10, before_horizon_20:20};
@@ -72,8 +76,9 @@ function choosePass() {
     if (found) return found;
   }
   if (selectedName) return state.passes.find(pass=>pass.name === selectedName) || null;
-  return state.passes[0];
+  return state.passes.find(pass=>!satelliteNotificationsPaused(pass.name)) || null;
 }
+function satelliteNotificationsPaused(name) {return Boolean(state && state.settings.satellite_notifications_paused?.[name]);}
 function renderNext() {
   const pass = choosePass(), settings = state.settings, minimum = settings.minimum_elevation;
   const horizon = settings.alert_mode === 'horizon', early = earlyAlertMinutes[settings.alert_mode] || 0;
@@ -81,8 +86,8 @@ function renderNext() {
   $('alertRule').textContent = early ? `Alerts ${early} min before horizon rise · peak ≥ ${minimum}°` : horizon ? `Alerts at horizon rise · peak ≥ ${minimum}°` : `Alerts at ${minimum}° above your horizon`;
   $('alertTimeLabel').textContent = early ? 'Early alert time' : horizon ? 'Horizon rise / alert' : `Reaches ${minimum}°`;
   $('ringLabel').textContent = `${minimum}° alert boundary`;
-  $('nextName').textContent = pass ? pass.name : (state.forecast_at ? (selectedName || 'No passes') : 'Calculating…');
-  $('nextSubtitle').textContent = pass ? `${dayLabel(pass.alert_at)} · ${timeZone === 'UTC' ? 'UTC' : Intl.DateTimeFormat().resolvedOptions().timeZone} · NORAD ${pass.norad}` : state.forecast_at ? `No qualifying passes in the next ${settings.forecast_hours} hours.` : 'Downloading orbital elements and calculating passes.';
+  $('nextName').textContent = pass ? pass.name : (state.forecast_at ? (selectedName || (settings.satellites.every(satelliteNotificationsPaused)?'Notifications paused':'No passes')) : 'Calculating…');
+  $('nextSubtitle').textContent = pass ? `${dayLabel(pass.alert_at)} · ${timeZone === 'UTC' ? 'UTC' : Intl.DateTimeFormat().resolvedOptions().timeZone} · NORAD ${pass.norad}` : state.forecast_at ? (state.passes.length && !selectedName ? 'Notifications are paused for satellites with upcoming passes. Uncheck Pause notifications in Settings to resume.' : `No qualifying passes in the next ${settings.forecast_hours} hours.`) : 'Downloading orbital elements and calculating passes.';
   $('nextStart').textContent = pass ? formatTime(pass.alert_at,true) : '—';
   $('nextPeak').textContent = pass ? `${pass.peak_elevation.toFixed(1)}°` : '—';
   $('nextDuration').textContent = pass ? duration((new Date(pass.threshold_set)-new Date(pass.threshold_rise))/1000) : '—';
@@ -95,7 +100,8 @@ function renderNext() {
 }
 function updateCountdown() {
   const pass = choosePass();
-  if (!pass) {$('countdown').textContent='-- : -- : --';return;}
+  if (!pass) {$('countdown').textContent='-- : -- : --';$('countdownLabel').textContent='NO ALERT SCHEDULED';$('nextStatus').textContent='LIVE FORECAST';return;}
+  if(satelliteNotificationsPaused(pass.name)){$('countdown').textContent='PAUSED';$('countdownLabel').textContent='NOTIFICATIONS PAUSED FOR THIS SATELLITE';$('nextStatus').textContent='NOTIFICATIONS PAUSED';return;}
   const now = Date.now(), until = (new Date(pass.alert_at)-now)/1000;
   let remaining = until, label = 'TIME UNTIL ALERT', status = 'LIVE FORECAST';
   if (until <= 0 && now < new Date(pass.horizon_rise)) {
@@ -119,7 +125,7 @@ function renderFleet() {
     const tag = ready ? (high ? 'In range' : up ? 'Above horizon' : 'Below horizon') : row.status;
     const detail = ready ? (row.next_pass ? `Next ${formatTime(row.next_pass.alert_at)} · ${dayLabel(row.next_pass.alert_at)}` : 'No qualifying pass in forecast') : row.detail;
     const age = row.tle_age_days == null ? '' : ` · TLE ${Math.abs(row.tle_age_days).toFixed(1)}d`;
-    return `<button class="sat-card ${high?'active':''} ${selectedName===row.name?'focused':''}" data-satellite="${esc(row.name)}" title="${esc(row.detail + age)}"><div class="sat-heading"><strong>${esc(row.name)}</strong><span class="sat-status ${up?'up':!ready?'warn':''}">${esc(tag)}</span></div><div class="sat-metrics"><div><span>ELEVATION</span><strong>${ready && row.elevation != null ? row.elevation.toFixed(1)+'°':'—'}</strong></div><div><span>AZIMUTH</span><strong>${ready && row.azimuth != null ? row.azimuth.toFixed(0)+'°':'—'}</strong></div></div><div class="sat-bottom">${esc(detail)}${esc(age)}</div></button>`;
+    return `<button class="sat-card ${high?'active':''} ${selectedName===row.name?'focused':''}" data-satellite="${esc(row.name)}" title="${esc(row.detail + age)}"><div class="sat-heading"><strong>${esc(row.name)}</strong><span class="sat-status ${up?'up':!ready?'warn':''}">${esc(tag)}</span></div>${satelliteNotificationsPaused(row.name)?'<span class="tag">Notifications paused</span>':''}<div class="sat-metrics"><div><span>ELEVATION</span><strong>${ready && row.elevation != null ? row.elevation.toFixed(1)+'°':'—'}</strong></div><div><span>AZIMUTH</span><strong>${ready && row.azimuth != null ? row.azimuth.toFixed(0)+'°':'—'}</strong></div></div><div class="sat-bottom">${esc(detail)}${esc(age)}</div></button>`;
   }).join('');
   $('fleet').querySelectorAll('button').forEach(button=>button.addEventListener('click',()=>{selectedName=button.dataset.satellite;selectedPass=null;renderNext();renderFleet();}));
 }
@@ -141,8 +147,8 @@ function renderTable() {
 }
 
 function renderAlerts() {
-  const active=state.alerts.filter(alert=>!alert.acknowledged && alert.active && (!state.paused || alert.test));
-  const pending=state.alerts.filter(alert=>!alert.acknowledged && (!alert.test || alert.active));
+  const active=state.alerts.filter(alert=>!alert.acknowledged && alert.active && (alert.test || !satelliteNotificationsPaused(alert.name)) && (!state.paused || alert.test));
+  const pending=state.alerts.filter(alert=>!alert.acknowledged && (alert.test || !satelliteNotificationsPaused(alert.name)) && (!alert.test || alert.active));
   $('alertBanner').classList.toggle('hidden',!pending.length);
   $('alertBanner').classList.toggle('awaiting-acknowledgement',!active.length);
   if (pending.length) {
@@ -338,7 +344,7 @@ function renderRotatorTest(result) {
 async function refreshPorts(useSaved=false) {
   try {
     const response=await fetch('/api/ports',{cache:'no-store'});if(!response.ok)throw new Error('Cannot list serial ports.');
-    const result=await response.json();serialPorts=result.ports;defaultProfiles=result.default_profiles;
+    const result=await response.json();serialPorts=result.ports;
     for(const key of ['rotator_port','radio_port']) {
       const select=$('settingsForm').elements.namedItem(key),chosen=useSaved?state.settings[key]:select.value;
       select.replaceChildren(new Option('Select a port',''));
@@ -351,7 +357,12 @@ async function refreshPorts(useSaved=false) {
 }
 function renderProfiles() {
   if(!state)return;
-  $('profileList').innerHTML=state.settings.satellites.map(name=>{const p=state.settings.satellite_profiles[name];return `<article class="profile-row"><strong>${esc(name)}</strong><p>RX ${p.downlink_mhz==null?'unset':p.downlink_mhz.toFixed(6)+' MHz'} · ${esc(p.downlink_mode)}<br>TX ${p.uplink_mhz==null?'receive only':p.uplink_mhz.toFixed(6)+' MHz'} · ${esc(p.uplink_mode)}</p><p>${esc(p.notes)}</p><div class="profile-actions"><button type="button" class="button" data-edit="${esc(name)}">Edit ${esc(name)}</button><button type="button" class="text-button" data-delete="${esc(name)}">Remove ${esc(name)}</button></div></article>`;}).join('');
+  $('profileList').innerHTML=state.settings.satellites.map(name=>{const p=state.settings.satellite_profiles[name];return `<article class="profile-row"><strong>${esc(name)}</strong><label class="checkbox"><input type="checkbox" data-pause-satellite="${esc(name)}" aria-label="Pause notifications for ${esc(name)}" ${satelliteNotificationsPaused(name)?'checked':''}> Pause notifications until I uncheck this</label><p>RX ${p.downlink_mhz==null?'unset':p.downlink_mhz.toFixed(6)+' MHz'} · ${esc(p.downlink_mode)}<br>TX ${p.uplink_mhz==null?'receive only':p.uplink_mhz.toFixed(6)+' MHz'} · ${esc(p.uplink_mode)}</p><p>${esc(p.notes)}</p><div class="profile-actions"><button type="button" class="button" data-edit="${esc(name)}">Edit ${esc(name)}</button><button type="button" class="text-button" data-delete="${esc(name)}">Remove ${esc(name)}</button></div></article>`;}).join('');
+  $('profileList').querySelectorAll('[data-pause-satellite]').forEach(checkbox=>checkbox.addEventListener('change',async()=>{
+    const name=checkbox.dataset.pauseSatellite,paused=checkbox.checked;checkbox.disabled=true;
+    try{await post('/api/settings',{satellite_notifications_paused:{[name]:paused}});await refreshState();renderProfiles();if(editingSatellite===name)$('profilePause').checked=paused;toast(`${name} notifications ${paused?'paused until you uncheck it':'resumed'}.`);}
+    catch(error){checkbox.checked=!paused;toast(error.message);}finally{checkbox.disabled=false;}
+  }));
   $('profileList').querySelectorAll('[data-edit]').forEach(button=>button.addEventListener('click',()=>editProfile(button.dataset.edit)));
   $('profileList').querySelectorAll('[data-delete]').forEach(button=>button.addEventListener('click',async()=>{
     const name=button.dataset.delete,names=state.settings.satellites.filter(n=>n!==name),profiles={...state.settings.satellite_profiles};delete profiles[name];
@@ -363,21 +374,76 @@ function fillProfile(p) {
   $('profileRxMode').value=p.downlink_mode||'USB';$('profileTxMode').value=p.uplink_mode||'LSB';$('profileNotes').value=p.notes||'';
 }
 function editProfile(name=null) {
+  resetProfileLookup();manualProfileFields=new Set();automaticProfileValues={};
   editingSatellite=name;profileEditorOpen=true;$('profileEditor').classList.remove('hidden');
   $('profileEditorTitle').textContent=name?`Edit ${name}`:'Add satellite';$('profileName').value=name||'';$('profileError').textContent='';
+  $('lookupSatellite').classList.toggle('hidden',Boolean(name));$('profileLookupStatus').classList.toggle('hidden',Boolean(name));
+  $('profilePause').checked=name?satelliteNotificationsPaused(name):false;
+  profileSource=name?state.settings.satellite_profiles[name].source||'':'';
   fillProfile(name?state.settings.satellite_profiles[name]:{});$('profileName').focus();
 }
+function resetProfileLookup(clearFilled=false) {
+  clearTimeout(profileLookupTimer);profileLookupGeneration++;lastLookupName='';profileMatches=[];
+  $('profileLookupChoices').classList.add('hidden');$('profileLookupSource').classList.add('hidden');
+  $('profileLookupStatus').textContent='Enter a name to look up frequencies and modes automatically.';
+  if(clearFilled){
+    for(const [id,value] of Object.entries(automaticProfileValues))if(!manualProfileFields.has(id) && $(id).value===value)$(id).value=profileEmpty[id];
+    automaticProfileValues={};profileSource='';
+  }
+}
+function showProfileSource(source) {
+  const box=$('profileLookupSource');box.replaceChildren();box.classList.toggle('hidden',!source);
+  if(!source)return;
+  box.append('Source: ');
+  if(/^https:\/\/www\.amsat\.org\/live-(fm|linear)-satellites\/$/.test(source)){
+    const link=document.createElement('a');link.href=source;link.target='_blank';link.rel='noopener';link.textContent='AMSAT frequency table ↗';box.append(link);
+  }else box.append(source);
+}
+function applyLookupProfile(match) {
+  let kept=false;
+  for(const [id,key] of Object.entries(profileFields)){
+    if(manualProfileFields.has(id)){kept=true;continue;}
+    $(id).value=match.profile[key]??profileEmpty[id];automaticProfileValues[id]=$(id).value;
+  }
+  profileSource=match.profile.source||'';showProfileSource(profileSource);
+  $('profileLookupStatus').textContent=`${match.label}: frequencies and modes filled in. Review and edit them before saving.${kept?' Values you entered manually have been kept.':''}`;
+}
+async function lookupSatelliteProfile(force=false) {
+  clearTimeout(profileLookupTimer);
+  if(!profileEditorOpen || editingSatellite)return;
+  const name=$('profileName').value.trim().toUpperCase();
+  if(!name || (!force && lastLookupName===name))return;
+  lastLookupName=name;const generation=++profileLookupGeneration;
+  $('profileLookupStatus').textContent='Looking up frequencies and modes…';$('profileLookupChoices').classList.add('hidden');
+  const current=()=>profileEditorOpen && !editingSatellite && generation===profileLookupGeneration && $('profileName').value.trim().toUpperCase()===name;
+  try{
+    const result=await post('/api/profile-lookup',{name});if(!current())return;
+    profileMatches=result.matches||[];$('profileLookupStatus').textContent=result.message;
+    if(profileMatches.length===1){applyLookupProfile(profileMatches[0]);if(result.bundled)$('profileLookupStatus').textContent=result.message+' '+$('profileLookupStatus').textContent;}
+    else if(profileMatches.length>1){
+      $('profileLookupChoice').replaceChildren(new Option('Choose an operating profile',''));
+      profileMatches.forEach((match,index)=>$('profileLookupChoice').add(new Option(`${match.label} · RX ${match.profile.downlink_mhz} MHz / TX ${match.profile.uplink_mhz} MHz`,String(index))));
+      $('profileLookupChoices').classList.remove('hidden');
+    }
+  }catch(error){if(current())$('profileLookupStatus').textContent='Automatic lookup is unavailable. Enter the downlink, uplink, receive mode and transmit mode manually, or press Look up frequencies & modes to retry.';}
+}
 $('addSatellite').addEventListener('click',()=>editProfile());
-$('cancelSatellite').addEventListener('click',()=>{profileEditorOpen=false;$('profileEditor').classList.add('hidden');});
-$('profileName').addEventListener('change',()=>{if(!editingSatellite && defaultProfiles[$('profileName').value.trim().toUpperCase()])fillProfile(defaultProfiles[$('profileName').value.trim().toUpperCase()]);});
+$('cancelSatellite').addEventListener('click',()=>{resetProfileLookup();profileEditorOpen=false;$('profileEditor').classList.add('hidden');});
+$('profileName').addEventListener('input',()=>{if(!editingSatellite){resetProfileLookup(true);if($('profileName').value.trim())profileLookupTimer=setTimeout(()=>lookupSatelliteProfile(),650);}});
+$('profileName').addEventListener('change',()=>lookupSatelliteProfile());
+$('lookupSatellite').addEventListener('click',()=>lookupSatelliteProfile(true));
+$('profileLookupChoice').addEventListener('change',()=>{const index=$('profileLookupChoice').value;if(index!=='' && profileMatches[Number(index)])applyLookupProfile(profileMatches[Number(index)]);});
+for(const id of Object.keys(profileFields))for(const event of ['input','change'])$(id).addEventListener(event,()=>manualProfileFields.add(id));
 $('saveSatellite').addEventListener('click',async()=>{
   const name=$('profileName').value.trim().toUpperCase();
   if(!name){$('profileError').textContent='Enter a satellite name or NORAD number.';return;}
   if(name!==editingSatellite && state.settings.satellites.includes(name)){$('profileError').textContent='That satellite is already in your watch list.';return;}
   const names=editingSatellite?state.settings.satellites.map(n=>n===editingSatellite?name:n):[...state.settings.satellites,name];
   const profiles={...state.settings.satellite_profiles};if(editingSatellite)delete profiles[editingSatellite];
-  const p={downlink_mhz:$('profileRx').value===''?null:Number($('profileRx').value),uplink_mhz:$('profileTx').value===''?null:Number($('profileTx').value),downlink_mode:$('profileRxMode').value,uplink_mode:$('profileTxMode').value,notes:$('profileNotes').value,source:(state.settings.satellite_profiles[editingSatellite] || defaultProfiles[name] || {}).source || ''};profiles[name]=p;
-  try{await post('/api/settings',{satellites:names,satellite_profiles:profiles});await refreshState();renderProfiles();profileEditorOpen=false;$('profileEditor').classList.add('hidden');toast(`${name} saved. Live tracking is off.`);}catch(error){$('profileError').textContent=error.message;}
+  const p={downlink_mhz:$('profileRx').value===''?null:Number($('profileRx').value),uplink_mhz:$('profileTx').value===''?null:Number($('profileTx').value),downlink_mode:$('profileRxMode').value,uplink_mode:$('profileTxMode').value,notes:$('profileNotes').value,source:profileSource};profiles[name]=p;
+  const notifications={...state.settings.satellite_notifications_paused};if(editingSatellite)delete notifications[editingSatellite];notifications[name]=$('profilePause').checked;
+  profileLookupGeneration++;clearTimeout(profileLookupTimer);
+  try{await post('/api/settings',{satellites:names,satellite_profiles:profiles,satellite_notifications_paused:notifications});await refreshState();renderProfiles();profileEditorOpen=false;$('profileEditor').classList.add('hidden');toast(`${name} saved. Live tracking is off.`);}catch(error){$('profileError').textContent=error.message;}
 });
 $('scanPorts').addEventListener('click',()=>refreshPorts());
 $('trackingToggle').addEventListener('click',async()=>{

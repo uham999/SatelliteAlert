@@ -13,6 +13,15 @@
     "AO-123"
   ],
   "refresh_hours": 24.0,
+  "satellite_notifications_paused": {
+    "RS-44": false,
+    "AO-73": false,
+    "SO-50": false,
+    "ISS": false,
+    "FO-29": false,
+    "JO-97": false,
+    "AO-123": false
+  },
   "forecast_hours": 48.0,
   "maximum_tle_age_days": 7.0,
   "alert_mode": "before_horizon_5",

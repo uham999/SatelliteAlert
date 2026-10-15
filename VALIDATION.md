@@ -1,4 +1,36 @@
-# Verification record — 7–8 October 2026
+# Verification record
+
+## Satellite notification pauses and frequency lookup — 15 October 2026
+
+- **156 offline Python tests passed** on Windows with both Python **3.12.14**
+  and **3.14.8**. The suite covers saved per-satellite pauses, unchecked defaults,
+  immediate suppression of existing and new alerts, other satellites continuing
+  to alert, resuming within a pass, and notification-only changes preserving
+  predictions and leaving equipment control running. Simulated serial fixtures
+  continue to cover the existing radio and rotator behavior.
+- **38 offline dashboard DOM checks passed**, including checkbox saves,
+  rename/delete persistence, new-satellite defaults, all four lookup fields,
+  source attribution, editable results, multiple operating profiles, no-match
+  manual entry, retry after failure, and delayed replies preserving manual input
+  and ignoring a closed/reopened editor. These checks use jsdom and fake HTTP;
+  they are not a rendered-browser or physical hardware test.
+- Real HTTPS requests successfully parsed AMSAT's current FM and linear tables.
+  Live examples included AO-91, TO-108, both AO-7 operating profiles and TEVEL2-9.
+  An unknown name returned an explicit manual-entry message. Offline tests also
+  verify cache expiry, unavailable/changed pages, exact alias matching, and
+  labelled bundled-reference fallback.
+- The local server was restarted with live equipment control and radio testing
+  off. Its actual authenticated HTTP lookup returned current profiles for AO-91,
+  TO-108 and NORAD 25544 (ISS), and a no-match result for an unknown name.
+  The dashboard and health endpoint responded successfully. Existing station,
+  frequency and serial settings were preserved; all seven initial satellite
+  notification pauses were unchecked.
+- Browser inspection was attempted, including a helper reset, but the computer
+  use runtime failed to start with `windows sandbox failed: helper_unknown_error:
+  setup refresh had errors`. No rendered-screen verification is claimed.
+  No physical radio or rotator was used for these checks.
+
+## Initial application verification — 7–8 October 2026
 
 The app was launched on Windows inside Codex using Python 3.12.14.
 The supplied requirements pin the versions used for verification:

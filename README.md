@@ -294,11 +294,21 @@ Whenever either kind of pause applies, the dashboard displays:
 
 The watch list sorts by each satellite's **next unalerted qualifying pass**, with
 the earliest predicted alert first. Satellites without one in the forecast go
-last. Equal alert times retain the configured satellite order. Pausing does not
-change predicted times or the order.
+last. Satellites with individually paused notifications follow those with
+notifications enabled. Equal alert times retain the configured satellite order.
+The global Pause alerts control does not change predicted times or the order.
 
 Pause controls apply immediately when saved, without recalculating or
 acknowledging an existing pass alert.
+
+In **Settings → Satellites & frequencies**, each satellite has a **Pause
+notifications until I uncheck this** checkbox. Checking it saves immediately and
+silences that satellite's chimes, Windows popups, browser notifications and
+dashboard alert banner until you uncheck it, including after restarting the app.
+Other satellites continue to alert. Existing alerts remain in history for
+acknowledgement. Positions and predictions continue updating, and notification
+pauses leave live radio/rotator tracking running. New satellites start with this
+box **unchecked**. You can also set it in the satellite editor.
 
 ![Automatic pause enabled from midnight for seven hours](docs/automatic-pause.jpg)
 
@@ -454,6 +464,26 @@ edits save immediately. The watch list must retain at least one entry. A new
 custom satellite must also be present in the AMSAT orbital feed to be tracked.
 Leave RX blank for rotator-only operation, or TX blank for receive-only tuning.
 IC-9700 duplex profiles must use different supported radio bands.
+
+When adding a satellite, enter its name and pause briefly or move to the next
+field. The app automatically looks up the downlink, uplink, receive mode and
+transmit mode in AMSAT's [FM](https://www.amsat.org/live-fm-satellites/) and
+[linear](https://www.amsat.org/live-linear-satellites/) frequency tables. The
+**Look up frequencies & modes** button retries the lookup. A NORAD number works
+when its identity can be resolved from the orbital feed or the built-in catalogue.
+Exact names and published aliases are matched; similar names are not guessed.
+Linear profiles use the centre of each passband. If more than one operating
+profile is published, select one in **Operating profile** before using its values.
+
+Lookup results include the source and remain editable before **Save satellite**.
+Fields you enter manually are preserved if a lookup finishes later. No match or
+an unavailable lookup displays a message asking you to enter all four values
+manually. You can still save the satellite. The seven bundled references below
+are an explicitly labelled fallback when their live source is unavailable.
+Lookups require internet access; successful tables are cached for 24 hours, and
+unavailable tables are retried after a minute or when the app restarts. Lookup
+does not prove that the transponder is currently operating or save settings
+until you press **Save satellite**.
 
 These starting values were checked against AMSAT's
 [linear](https://www.amsat.org/live-linear-satellites/) and

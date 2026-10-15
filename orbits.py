@@ -28,6 +28,7 @@ DEFAULT_SETTINGS = {
     "observer_height_m": 0.0,
     "minimum_elevation": 35.0,
     "satellites": ["RS-44", "AO-73", "SO-50", "ISS", "FO-29", "JO-97", "AO-123"],
+    "satellite_notifications_paused": {},
     "refresh_hours": 24.0,
     "forecast_hours": 48,
     "maximum_tle_age_days": 7.0,
@@ -103,6 +104,15 @@ def validate_settings(values: dict) -> dict:
         if name not in normalised:
             normalised.append(name)
     result["satellites"] = normalised
+    paused = result["satellite_notifications_paused"]
+    if not isinstance(paused, dict) or len(paused) > 60:
+        raise ValueError("Satellite notification pauses must be an object keyed by satellite name.")
+    normalised_pauses = {}
+    for name, value in paused.items():
+        if not isinstance(name, str) or not isinstance(value, bool):
+            raise ValueError("Each satellite notification pause must be true or false.")
+        normalised_pauses[name.strip().upper()] = value
+    result["satellite_notifications_paused"] = {name: normalised_pauses.get(name, False) for name in normalised}
     result["satellite_profiles"] = validate_profiles(result["satellite_profiles"], normalised)
     for key, choices in (("rotator_baud", (1200, 2400, 4800, 9600)), ("radio_baud", (9600, 19200, 57600, 115200)), ("rotator_max_azimuth", (360, 450))):
         if isinstance(result[key], bool) or result[key] not in choices:

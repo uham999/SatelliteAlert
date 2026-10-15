@@ -52,6 +52,32 @@ class DashboardServerTests(unittest.TestCase):
         connection.close()
         return result
 
+    def test_frequency_lookup_is_authenticated_and_resolves_norad_identity(self):
+        reply = {"status": "found", "matches": [{"label": "ISS", "profile": {"downlink_mhz": 437.8}}], "message": "Offline test"}
+        with patch.object(self.monitor.frequency_lookup, "lookup", return_value=reply) as lookup:
+            status, body, _ = self.request("POST", "/api/profile-lookup", {"name": "25544"})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), reply)
+            self.assertIn("ISS", lookup.call_args.args[1])
+            self.assertEqual(self.request("POST", "/api/profile-lookup", {"name": "ISS"}, {"X-Satellite-Token": "wrong"})[0], 403)
+            self.assertEqual(lookup.call_count, 1)
+            self.assertEqual(self.request("POST", "/api/profile-lookup", {"name": "<script>"})[0], 400)
+            self.assertEqual(self.request("POST", "/api/profile-lookup", {"name": None})[0], 400)
+
+    def test_notification_pause_api_saves_and_returns_quiet_active_alerts(self):
+        self.now = self.monitor.passes[0].peak_time
+        self.monitor.tick()
+        self.assertTrue(self.monitor.alerts)
+        status, _, _ = self.request("POST", "/api/settings", {"satellite_notifications_paused": {"ISS": True}})
+        self.assertEqual(status, 200)
+        _, body, _ = self.request("GET", "/api/state")
+        value = json.loads(body)
+        self.assertTrue(value["settings"]["satellite_notifications_paused"]["ISS"])
+        self.assertTrue(value["satellites"][0]["notifications_paused"])
+        self.assertFalse(value["alerts"][0]["active"])
+        self.assertFalse(value["alerts"][0]["acknowledged"])
+        self.assertEqual(self.request("POST", "/api/settings", {"satellite_notifications_paused": {"ISS": "true"}})[0], 400)
+
     def test_dashboard_assets_and_live_state(self):
         for path in ("/", "/app.js", "/style.css", "/api/health", "/d3-array.min.js", "/d3-geo.min.js", "/world-land.json", "/alert-chime.wav"):
             with self.subTest(path=path):
