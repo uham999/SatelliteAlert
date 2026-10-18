@@ -12,7 +12,7 @@ class RadioConnectionTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.factory = Factory(self.clock)
-        self.settings = validate_settings({'radio_port': 'COM11', 'rotator_port': 'COM10', 'radio_baud': 57600})
+        self.settings = validate_settings({'radio_port': 'COM11', 'rotator_port': 'COM10', 'radio_baud': 57600, 'rotator_enabled': True, 'radio_enabled': True})
         self.controller = HardwareController(self.factory, lambda: [{'device': 'COM10'}, {'device': 'COM11'}], self.clock)
 
     def tearDown(self):

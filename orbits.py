@@ -35,18 +35,22 @@ DEFAULT_SETTINGS = {
     "alert_mode": "before_horizon_5",
     "earth_overlay": True,
     "sound_enabled": True,
+    # Keep the existing enable-flag name; the actual level is configurable below.
     "windows_maximum_volume": True,
+    "windows_volume_percent": 100.0,
+    "auto_acknowledge_enabled": True,
+    "auto_acknowledge_seconds": 60.0,
     "repeat_sound_seconds": 30,
     "windows_popup": True,
     "automatic_pause_enabled": True,
     "automatic_pause_start": "00:00",
     "automatic_pause_hours": 7.0,
     "satellite_profiles": DEFAULT_PROFILES,
-    "rotator_enabled": True,
+    "rotator_enabled": False,
     "rotator_port": "",
     "rotator_baud": 9600,
     "rotator_max_azimuth": 360,
-    "radio_enabled": True,
+    "radio_enabled": False,
     "radio_port": "COM6",
     "radio_baud": 57600,
     "radio_address": "A2",
@@ -75,6 +79,7 @@ def validate_settings(values: dict) -> dict:
         "observer_height_m": (-500, 10000), "minimum_elevation": (0, 89.9),
         "refresh_hours": (1, 168), "forecast_hours": (6, 168),
         "maximum_tle_age_days": (1, 14), "repeat_sound_seconds": (10, 600),
+        "windows_volume_percent": (1, 100), "auto_acknowledge_seconds": (1, 86400),
         "automatic_pause_hours": (0.25, 24),
         "radio_step_hz": (1, 1000),
     }
@@ -86,7 +91,7 @@ def validate_settings(values: dict) -> dict:
         if isinstance(result[key], bool) or not math.isfinite(value) or not lower <= value <= upper:
             raise ValueError(f"{key.replace('_', ' ')} must be between {lower} and {upper}.")
         result[key] = value
-    for key in ("sound_enabled", "windows_maximum_volume", "windows_popup", "earth_overlay", "automatic_pause_enabled", "rotator_enabled", "radio_enabled"):
+    for key in ("sound_enabled", "windows_maximum_volume", "auto_acknowledge_enabled", "windows_popup", "earth_overlay", "automatic_pause_enabled", "rotator_enabled", "radio_enabled"):
         if not isinstance(result[key], bool):
             raise ValueError(f"{key} must be true or false.")
     if not isinstance(result["automatic_pause_start"], str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", result["automatic_pause_start"]):
@@ -146,7 +151,7 @@ def settings_for_startup(values: dict, ports: list) -> dict:
         com3 = next((port["device"] for port in ports if port["device"].upper() == "COM3"), "")
         radio_port = initial["radio_port"]
         shared = (isinstance(radio_port, str) and radio_port.upper() == "COM3"
-                  and initial.get("radio_enabled", True) and initial.get("rotator_enabled", True))
+                  and initial.get("radio_enabled", DEFAULT_SETTINGS["radio_enabled"]) and initial.get("rotator_enabled", DEFAULT_SETTINGS["rotator_enabled"]))
         initial["rotator_port"] = "" if shared else com3
     return validate_settings(initial)
 

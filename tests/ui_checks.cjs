@@ -11,6 +11,9 @@ const flush = async () => {for (let i=0;i<8;i++) await new Promise(resolve=>setI
 
 async function dashboard(t, changes={}) {
   const settings=JSON.parse(fs.readFileSync(path.join(root,'settings.example.json'),'utf8'));
+  // Equipment fixtures opt in explicitly; manual-mode regression cases retain
+  // their existing acknowledgement behavior. Fresh defaults are checked below.
+  Object.assign(settings,{rotator_enabled:true,radio_enabled:true,auto_acknowledge_enabled:false});
   settings.satellite_notifications_paused=Object.fromEntries(settings.satellites.map(name=>[name,false]));
   const now=new Date().toISOString(),errors=[],requests=[],paint=[];
   const elevations={'RS-44':12,'ISS':62,'FO-29':23,'AO-73':-5,'JO-97':-12,'SO-50':-20,'AO-123':-40};
@@ -53,8 +56,10 @@ async function dashboard(t, changes={}) {
     else if(url==='/api/ports')result={ports,default_profiles:settings.satellite_profiles};
     else if(url==='/api/settings'){
       const pauses={...server.settings.satellite_notifications_paused,...body.satellite_notifications_paused};
+      const equipmentKeys=['satellites','satellite_profiles','latitude','longitude','observer_height_m','minimum_elevation','rotator_enabled','rotator_port','rotator_baud','rotator_max_azimuth','radio_enabled','radio_port','radio_baud','radio_address','radio_step_hz','tracking_minimum_mode'];
+      const equipmentChanged=Object.keys(body).some(key=>equipmentKeys.includes(key) && JSON.stringify(body[key])!==JSON.stringify(server.settings[key]));
       server.settings={...server.settings,...body};server.settings.satellite_notifications_paused=Object.fromEntries(server.settings.satellites.map(name=>[name,Boolean(pauses[name])]));
-      if(Object.keys(body).some(key=>key!=='satellite_notifications_paused'))server.hardware.enabled=false;
+      if(equipmentChanged)server.hardware.enabled=false;
       server.satellites=server.satellites.filter(row=>server.settings.satellites.includes(row.name));updateTarget();result={ok:true};
     } else if(url==='/api/profile-lookup'){
       result=server.lookupReply?await server.lookupReply(body.name):{status:'not_found',matches:[],message:'No matching frequency profile was found. Enter the downlink, uplink, receive mode and transmit mode manually.'};
@@ -496,4 +501,48 @@ test('maximum Windows volume is enabled by default and can be disabled without a
   assert.equal(requests.filter(row=>row.url==='/api/settings').at(-1).body.windows_maximum_volume,false);
   assert.equal(server.alerts[0].acknowledged,false);assert.ok(!$('alertBanner').classList.contains('hidden'));
   assert.equal($('saveStatus').textContent,'Settings saved.');
+});
+
+test('fresh defaults select one-minute automatic acknowledgement and notification-only equipment',async t=>{
+  const defaults=JSON.parse(fs.readFileSync(path.join(root,'settings.example.json'),'utf8'));
+  const {$}=await dashboard(t,{settings:defaults}),fields=$('settingsForm').elements;
+  assert.equal(fields.auto_acknowledge_enabled.checked,true);assert.equal(fields.auto_acknowledge_seconds.value,'60');
+  assert.equal(fields.windows_volume_percent.value,'100');assert.equal(fields.windows_maximum_volume.checked,true);
+  assert.equal(fields.rotator_enabled.checked,false);assert.equal(fields.radio_enabled.checked,false);
+  assert.equal($('trackingToggle').disabled,true);assert.match($('trackingNotice').textContent,/Notification-only mode/);
+  assert.match($('fleet').textContent,/ISS/);assert.match($('liveTarget').textContent,/ISS/);
+});
+
+test('alarm duration and chosen volume save without acknowledging alerts or stopping live equipment',async t=>{
+  const {$,w,server,refresh,requests}=await dashboard(t),fields=$('settingsForm').elements;
+  server.alerts=[{id:'pending-alarm',name:'ISS',test:false,active:true,acknowledged:false,created_at:server.now,message:'Example pass'}];
+  server.hardware.enabled=true;await refresh();
+  fields.auto_acknowledge_enabled.checked=true;fields.auto_acknowledge_enabled.dispatchEvent(new w.Event('change'));
+  assert.equal(fields.auto_acknowledge_seconds.disabled,false);
+  fields.auto_acknowledge_seconds.value='120';fields.windows_volume_percent.value='45';
+  $('settingsForm').dispatchEvent(new w.Event('submit',{cancelable:true}));await flush();
+  const saved=requests.filter(row=>row.url==='/api/settings').at(-1).body;
+  assert.equal(saved.auto_acknowledge_enabled,true);assert.equal(saved.auto_acknowledge_seconds,120);assert.equal(saved.windows_volume_percent,45);
+  assert.equal(server.alerts[0].acknowledged,false);assert.equal(server.hardware.enabled,true);assert.equal($('saveStatus').textContent,'Settings saved.');
+});
+
+test('manual acknowledgement and current-volume options disable their numeric controls',async t=>{
+  const {$,w,server}=await dashboard(t),fields=$('settingsForm').elements;
+  fields.auto_acknowledge_enabled.checked=false;fields.auto_acknowledge_enabled.dispatchEvent(new w.Event('change'));
+  fields.windows_maximum_volume.checked=false;fields.windows_maximum_volume.dispatchEvent(new w.Event('change'));
+  assert.equal(fields.auto_acknowledge_seconds.disabled,true);assert.equal(fields.windows_volume_percent.disabled,true);
+  $('settingsForm').dispatchEvent(new w.Event('submit',{cancelable:true}));await flush();
+  assert.equal(server.settings.auto_acknowledge_enabled,false);assert.equal(server.settings.windows_maximum_volume,false);
+  assert.equal(server.settings.auto_acknowledge_seconds,60);assert.equal(server.settings.windows_volume_percent,100);
+});
+
+test('automatic acknowledgement removes the alarm, closes browser notification and stays in history',async t=>{
+  const {$,w,server,refresh}=await dashboard(t);let closed=0;
+  w.Notification=class {static permission='granted';constructor(){}close(){closed++;}};
+  server.settings.auto_acknowledge_enabled=true;
+  server.alerts=[{id:'auto-alarm',name:'ISS',test:false,active:true,acknowledged:false,created_at:server.now,
+    auto_acknowledge_at:new Date(Date.now()+60000).toISOString(),message:'Example pass'}];await refresh();
+  assert.match($('autoAcknowledgeStatus').textContent,/Automatically acknowledges at/);
+  server.alerts[0].acknowledged=true;server.alerts[0].active=false;server.alerts[0].acknowledgement_source='automatic';await refresh();
+  assert.equal(closed,1);assert.ok($('alertBanner').classList.contains('hidden'));assert.match($('history').textContent,/AUTO ACKNOWLEDGED/);
 });

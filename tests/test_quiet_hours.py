@@ -18,7 +18,7 @@ class QuietHoursTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.now = datetime(2026, 10, 7, 12, tzinfo=UTC)
-        atomic_json(self.root / "settings.json", {**DEFAULT_SETTINGS, "satellites": ["ISS"], "sound_enabled": False, "windows_popup": False})
+        atomic_json(self.root / "settings.json", {**DEFAULT_SETTINGS, "satellites": ["ISS"], "sound_enabled": False, "windows_popup": False, "auto_acknowledge_enabled": False})
         self.monitor = self.load()
 
     def load(self):

@@ -14,7 +14,7 @@ class RotatorConnectionTests(unittest.TestCase):
     def setUp(self):
         self.clock, self.now = Clock(), datetime(2026, 10, 8, 19, 42, 16, tzinfo=timezone.utc)
         self.factory = Factory(self.clock)
-        self.settings = validate_settings({'rotator_port': 'COM10', 'radio_port': 'COM11'})
+        self.settings = validate_settings({'rotator_port': 'COM10', 'radio_port': 'COM11', 'rotator_enabled': True, 'radio_enabled': True})
         self.controller = HardwareController(self.factory, lambda: [{'device': 'COM10'}, {'device': 'COM11'}],
                                              self.clock, utc_clock=lambda: self.now)
 

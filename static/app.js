@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
 let state = null, selectedPass = null, selectedName = null, showAll = false, timeZone = localStorage.getItem('satellite-time-zone') || 'local';
 let audioContext = null, browserSound = false, soundSerial = null, notificationIds = new Set(), disconnected = false;
+const notificationHandles = new Map();
 let view = 'dashboard', toastTimer;
 let serialPorts=[], editingSatellite=null, profileEditorOpen=false;
 let profileLookupTimer, profileLookupGeneration=0, lastLookupName='', profileMatches=[], profileSource='';
@@ -67,8 +68,15 @@ function fillSettings() {
     else field.value = key === 'satellites' ? value.join('\n') : value;
   }
   $('notificationStatus').textContent = 'Notification' in window ? `Browser permission: ${Notification.permission}` : 'Notifications unavailable in this browser.';
+  updateAlarmSettings();
   renderProfiles();refreshPorts(true);
 }
+function updateAlarmSettings() {
+  const fields=$('settingsForm').elements;
+  fields.auto_acknowledge_seconds.disabled=!fields.auto_acknowledge_enabled.checked;
+  fields.windows_volume_percent.disabled=!fields.windows_maximum_volume.checked;
+}
+for(const name of ['auto_acknowledge_enabled','windows_maximum_volume'])$('settingsForm').elements.namedItem(name).addEventListener('change',updateAlarmSettings);
 function choosePass() {
   if (!state || !state.passes.length) return null;
   if (selectedPass) {
@@ -150,6 +158,12 @@ function renderAlerts() {
   const active=state.alerts.filter(alert=>!alert.acknowledged && alert.active && (alert.test || !satelliteNotificationsPaused(alert.name)) && (!state.paused || alert.test));
   const pending=state.alerts.filter(alert=>!alert.acknowledged && (alert.test || !satelliteNotificationsPaused(alert.name)) && (!alert.test || alert.active));
   $('alertBanner').classList.toggle('hidden',!pending.length);
+  const deadlines=pending.filter(alert=>alert.auto_acknowledge_at).map(alert=>alert.auto_acknowledge_at).sort();
+  $('autoAcknowledgeStatus').textContent=deadlines.length?`Automatically acknowledges at ${formatTime(deadlines[0],true)}. You can acknowledge sooner.`:'';
+  $('autoAcknowledgeStatus').classList.toggle('hidden',!deadlines.length);
+  for(const [id,notification] of notificationHandles)if(!active.some(alert=>alert.id===id)){
+    if(typeof notification.close==='function')notification.close();notificationHandles.delete(id);
+  }
   $('alertBanner').classList.toggle('awaiting-acknowledgement',!active.length);
   if (pending.length) {
     const tests=pending.every(alert=>alert.test),real=pending.filter(alert=>!alert.test);
@@ -163,13 +177,13 @@ function renderAlerts() {
     if (!notificationIds.has(alert.id)) {
       notificationIds.add(alert.id);
       if ('Notification' in window && Notification.permission==='granted') {
-        try{const notification=new Notification(alert.test?'Satellite Alert · Test':`Satellite Alert · ${alert.name}`,{body:alert.message,tag:alert.id});notification.onclick=()=>{window.focus();showView('dashboard');notification.close();};}catch(error){console.warn(error);}
+        try{const notification=new Notification(alert.test?'Satellite Alert · Test':`Satellite Alert · ${alert.name}`,{body:alert.message,tag:alert.id});notificationHandles.set(alert.id,notification);notification.onclick=()=>{window.focus();showView('dashboard');notification.close();};}catch(error){console.warn(error);}
       }
     }
   }
   if(soundSerial!==null && state.sound_serial>soundSerial && active.length && (!state.paused || active.some(alert=>alert.test)) && browserSound && state.settings.sound_enabled) chime();
   soundSerial=state.sound_serial;
-  $('history').innerHTML=state.alerts.length ? state.alerts.map(alert=>`<div class="history-item"><div><strong>${esc(alert.test?'TEST ALERT':alert.name)}</strong> <span class="tag">${alert.acknowledged?'ACKNOWLEDGED':alert.active?'ACTIVE':'AWAITING ACKNOWLEDGEMENT'}</span><p>${esc(alert.message)}</p></div><div class="history-actions"><time>${formatTime(alert.created_at,true,true)}</time>${!alert.acknowledged?`<button class="button" data-acknowledge="${esc(alert.id)}">Acknowledge</button>`:''}</div></div>`).join('') : '<p class="empty">No alerts yet. Use Test alert to check the banner and chime.</p>';
+  $('history').innerHTML=state.alerts.length ? state.alerts.map(alert=>`<div class="history-item"><div><strong>${esc(alert.test?'TEST ALERT':alert.name)}</strong> <span class="tag">${alert.acknowledged?(alert.acknowledgement_source==='automatic'?'AUTO ACKNOWLEDGED':'ACKNOWLEDGED'):alert.active?'ACTIVE':'AWAITING ACKNOWLEDGEMENT'}</span><p>${esc(alert.message)}</p></div><div class="history-actions"><time>${formatTime(alert.created_at,true,true)}</time>${!alert.acknowledged?`<button class="button" data-acknowledge="${esc(alert.id)}">Acknowledge</button>`:''}</div></div>`).join('') : '<p class="empty">No alerts yet. Use Test alert to check the banner and chime.</p>';
 }
 function renderStatus() {
   const warnings=[];
@@ -310,7 +324,9 @@ function renderTracking() {
   const h=state.hardware,target=state.tracking_target,visible=visibleSatellites();
   $('trackingToggle').textContent=h.enabled?'Stop live tracking':'Start live tracking';
   $('trackingToggle').classList.toggle('tracking-on',h.enabled);
-  $('trackingToggle').disabled=Boolean(h.radio_test_enabled);
+  const notificationOnly=!state.settings.rotator_enabled && !state.settings.radio_enabled;
+  $('trackingToggle').disabled=Boolean(h.radio_test_enabled || (notificationOnly && !h.enabled));
+  $('trackingToggle').title=notificationOnly?'Enable radio or rotator control in Settings to use live tracking.':'';
   $('radioTestToggle').textContent=h.radio_test_enabled?'Stop test radio connection':'Test radio connection';
   $('radioTestToggle').classList.toggle('radio-testing',Boolean(h.radio_test_enabled));
   $('radioTestToggle').setAttribute('aria-pressed',String(Boolean(h.radio_test_enabled)));
@@ -318,10 +334,11 @@ function renderTracking() {
   $('radioTestBanner').textContent=h.radio_test_enabled?`Radio connection test in progress · ${h.radio_test_frequency_hz?`MAIN ${mhz(h.radio_test_frequency_hz)} verified`:'Connecting…'} · 145.000 ↔ 145.555 MHz every 2 seconds`:'';
   renderRotatorTest(h.rotator_test);
   const trackingNotice=h.error?`Live control stopped: ${h.error} RX/TX frequencies below are calculated only. Correct the issue, then press Start live tracking.`:
+    notificationOnly?'Notification-only mode. Radio and rotator control are disabled in Settings. Alerts, positions and pass predictions continue.':
     !h.enabled && !h.radio_test_enabled && target?'Live tracking is off. RX/TX frequencies below are calculated only. Press Start live tracking to send adjustments to your configured equipment.':
     h.enabled && !state.settings.radio_enabled && target?'Radio adjustments are disabled in Settings. RX/TX frequencies below are calculated only. Enable the radio, save Settings, then start live tracking.':'';
   $('trackingNotice').textContent=trackingNotice;$('trackingNotice').classList.toggle('hidden',!trackingNotice);
-  $('trackingSummary').textContent=h.radio_test_enabled?'Radio connection test active. Live satellite tracking is stopped.':h.enabled?(target?`Tracking ${target.name} · highest current elevation · ${visible.length} above the horizon`:'Tracking is enabled. Waiting for a satellite above the tracking limit.'):'Live adjustments are off. Start live tracking to control your configured equipment.';
+  $('trackingSummary').textContent=h.radio_test_enabled?'Radio connection test active. Live satellite tracking is stopped.':h.enabled?(target?`Tracking ${target.name} · highest current elevation · ${visible.length} above the horizon`:'Tracking is enabled. Waiting for a satellite above the tracking limit.'):notificationOnly?'Notification-only mode. Enable devices in Settings if you want this app to control equipment.':'Live adjustments are off. Start live tracking to control your configured equipment.';
   $('liveTarget').innerHTML=target?liveDetails(target):'<p class="subtle">No watched satellite is currently above the tracking limit.</p>';
   const pos=h.rotator_position,command=h.commanded_position;
   $('equipmentStatus').innerHTML=`<div class="equipment-grid"><div><strong>Rotator · ${esc(h.rotator_status)}</strong><p>Reported: ${pos?`az ${pos.azimuth}° · el ${pos.elevation}°`:'—'}</p><p>Last command: ${command?`az ${command.azimuth}° · el ${command.elevation}°`:'—'}</p></div><div><strong>Radio · ${esc(h.radio_status)}</strong><p>Last verified RX: ${mhz(h.radio_rx_hz)}</p><p>Last verified TX: ${mhz(h.radio_tx_hz)}</p><p>${h.radio_verified_at?`Last radio readback: ${formatTime(h.radio_verified_at,true,true)} · ${esc(h.radio_verified_target)}`:'No radio readback yet.'}</p><p>Pass frequency updates: ${h.frequency_updates || 0}</p></div></div>${h.rotator_error?`<p class="equipment-error">Rotator: ${esc(h.rotator_error)}${h.enabled && state.settings.radio_enabled?' Radio control remains enabled.':''}</p>`:''}${h.error?`<p class="equipment-error">${esc(h.error)}</p>`:''}`;
@@ -508,7 +525,7 @@ $('settingsForm').addEventListener('submit',async event=>{
     const field=form.elements.namedItem(key);if(!field)continue;
     data[key]=field.type==='checkbox'?field.checked:field.type==='number'||['rotator_baud','radio_baud','rotator_max_azimuth'].includes(key)?Number(field.value):field.value;
   }
-  const recalculate=Object.keys(data).some(key=>!['earth_overlay','windows_maximum_volume','automatic_pause_enabled','automatic_pause_start','automatic_pause_hours','rotator_enabled','rotator_port','rotator_baud','rotator_max_azimuth','radio_enabled','radio_port','radio_baud','radio_address','radio_step_hz','tracking_minimum_mode'].includes(key) && JSON.stringify(data[key])!==JSON.stringify(state.settings[key]));
+  const recalculate=Object.keys(data).some(key=>!['earth_overlay','windows_maximum_volume','windows_volume_percent','auto_acknowledge_enabled','auto_acknowledge_seconds','automatic_pause_enabled','automatic_pause_start','automatic_pause_hours','rotator_enabled','rotator_port','rotator_baud','rotator_max_azimuth','radio_enabled','radio_port','radio_baud','radio_address','radio_step_hz','tracking_minimum_mode'].includes(key) && JSON.stringify(data[key])!==JSON.stringify(state.settings[key]));
   try{await post('/api/settings',data);if(recalculate){selectedPass=null;selectedName=null;}await refreshState();$('saveStatus').textContent=recalculate?'Saved. Recalculating your passes…':'Settings saved.';toast('Settings saved.');}catch(error){$('saveStatus').textContent=error.message;toast(error.message);}
 });
 $('enableNotifications').addEventListener('click',async()=>{

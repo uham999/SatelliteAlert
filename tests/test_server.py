@@ -22,7 +22,7 @@ class DashboardServerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="satellite-http-tests-")
         self.root = Path(self.temp.name)
         shutil.copytree(ROOT / "static", self.root / "static")
-        settings = {**DEFAULT_SETTINGS, "satellites": ["ISS"], "sound_enabled": False, "windows_popup": False, "automatic_pause_enabled": False}
+        settings = {**DEFAULT_SETTINGS, "satellites": ["ISS"], "sound_enabled": False, "windows_popup": False, "automatic_pause_enabled": False, "auto_acknowledge_enabled": False, "radio_enabled": True, "rotator_enabled": True}
         atomic_json(self.root / "settings.json", settings)
         self.now = datetime(2026, 10, 7, tzinfo=timezone.utc)
         self.monitor = Monitor(self.root, clock=lambda: self.now, fetcher=lambda: FIXTURE, local_timezone=timezone.utc)
@@ -63,6 +63,24 @@ class DashboardServerTests(unittest.TestCase):
             self.assertEqual(lookup.call_count, 1)
             self.assertEqual(self.request("POST", "/api/profile-lookup", {"name": "<script>"})[0], 400)
             self.assertEqual(self.request("POST", "/api/profile-lookup", {"name": None})[0], 400)
+
+    def test_alarm_policy_and_volume_save_then_auto_acknowledge_through_http(self):
+        status, _, _ = self.request('POST', '/api/settings', {'auto_acknowledge_enabled': True,
+                                   'auto_acknowledge_seconds': 2, 'windows_volume_percent': 45,
+                                   'rotator_enabled': False, 'radio_enabled': False})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.request('POST', '/api/test-alert')[0], 200)
+        _, body, _ = self.request('GET', '/api/state')
+        before = json.loads(body)
+        self.assertFalse(before['alerts'][0]['acknowledged'])
+        self.assertEqual(before['settings']['windows_volume_percent'], 45)
+        self.now += timedelta(seconds=2)
+        _, body, _ = self.request('GET', '/api/state')
+        after = json.loads(body)
+        self.assertTrue(after['alerts'][0]['acknowledged'])
+        self.assertEqual(after['alerts'][0]['acknowledgement_source'], 'automatic')
+        self.assertEqual(self.request('POST', '/api/tracking', {'enabled': True})[0], 400)
+        self.assertFalse(after['hardware']['enabled'])
 
     def test_notification_pause_api_saves_and_returns_quiet_active_alerts(self):
         self.now = self.monitor.passes[0].peak_time
@@ -209,13 +227,12 @@ class DashboardServerTests(unittest.TestCase):
                                          horizon_rise=self.now + timedelta(minutes=5))
         self.monitor.alerts.append(alert)
         messages = []
-        windows = SimpleNamespace(windll=SimpleNamespace(user32=SimpleNamespace(MessageBoxW=lambda *args: messages.append(args) or 1)))
         with patch("satellite_alert.threading.Thread") as popup_thread:
             self.monitor._popup([alert])
             callback = popup_thread.call_args.kwargs["target"]
-        with patch.dict("sys.modules", ctypes=windows):
+        with patch("satellite_alert.show_windows_popup", side_effect=lambda message, *args: messages.append(message)):
             callback()
-        self.assertIn("Acknowledge & silence", messages[0][1])
+        self.assertIn("Acknowledge & silence", messages[0])
         self.assertFalse(alert["acknowledged"])
         self.now += timedelta(seconds=61)
         _, body, _ = self.request("GET", "/api/state")

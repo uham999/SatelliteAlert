@@ -1,6 +1,7 @@
 """Windows playback-device volume through Core Audio, with no extra library."""
 from contextlib import contextmanager
 import ctypes
+import math
 import sys
 import uuid
 
@@ -91,10 +92,18 @@ def get_windows_volume():
 
 def maximize_windows_volume():
     """Set 100 percent, unmute, and confirm the playback endpoint's readback."""
+    return set_windows_volume(100)
+
+
+def set_windows_volume(percent):
+    """Set an explicit 1–100 percent level, unmute and confirm readback."""
+    if isinstance(percent, bool) or not isinstance(percent, (int, float)) or not math.isfinite(percent) or not 1 <= percent <= 100:
+        raise ValueError('Windows alarm volume must be between 1 and 100 percent.')
+    level = percent / 100
     with _endpoint() as volume:
-        volume.set_level(1.0)
+        volume.set_level(level)
         volume.set_mute(False)
         state = volume.state()
-        if state['muted'] or abs(state['level'] - 1.0) > .001:
-            raise OSError('Windows did not confirm 100% unmuted playback volume.')
+        if state['muted'] or abs(state['level'] - level) > .001:
+            raise OSError(f'Windows did not confirm {percent:g}% unmuted playback volume.')
         return state

@@ -186,11 +186,13 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(settings["radio_port"], "COM6")
         self.assertEqual(settings["radio_baud"], 57600)
         self.assertEqual(settings["radio_address"], "A2")
+        self.assertFalse(settings["rotator_enabled"])
+        self.assertFalse(settings["radio_enabled"])
         self.assertEqual(settings["satellite_profiles"]["AO-123"]["downlink_mhz"], 435.4)
         saved = validate_settings({"satellites": ["ISS", "12345"], "satellite_profiles": {"12345": {"downlink_mhz": 145.935, "uplink_mhz": None}}})
         self.assertEqual(set(saved["satellite_profiles"]), {"ISS", "12345"})
         self.assertEqual(saved["satellite_profiles"]["12345"]["downlink_mhz"], 145.935)
-        for data in ({"radio_baud": 4800}, {"radio_address": "E0"}, {"radio_address": "FA"}, {"rotator_port": "COM4", "radio_port": "com4"}, {"satellite_profiles": {"ISS": {"downlink_mhz": float("nan")}}}, {"satellite_profiles": {"ISS": {"uplink_mode": "BAD"}}}):
+        for data in ({"radio_baud": 4800}, {"radio_address": "E0"}, {"radio_address": "FA"}, {"rotator_port": "COM4", "radio_port": "com4", "rotator_enabled": True, "radio_enabled": True}, {"satellite_profiles": {"ISS": {"downlink_mhz": float("nan")}}}, {"satellite_profiles": {"ISS": {"uplink_mode": "BAD"}}}):
             with self.subTest(data=data), self.assertRaises(ValueError):
                 validate_settings(data)
 
@@ -202,7 +204,7 @@ class ProtocolTests(unittest.TestCase):
                 self.assertEqual((settings["radio_port"], settings["radio_baud"]), ("COM6", 57600))
                 self.assertEqual((settings["rotator_port"], settings["rotator_baud"]), ("COM3", 9600))
         self.assertEqual(settings_for_startup({}, [])["rotator_port"], "")
-        self.assertEqual(settings_for_startup({"radio_port": "COM3"}, ports)["rotator_port"], "")
+        self.assertEqual(settings_for_startup({"radio_port": "COM3", "radio_enabled": True, "rotator_enabled": True}, ports)["rotator_port"], "")
 
     def test_existing_port_and_baud_choices_are_preserved(self):
         saved = {"radio_port": "COM11", "radio_baud": 115200, "rotator_port": "COM10", "rotator_baud": 4800}
@@ -226,7 +228,7 @@ class SerialTrackingTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.factory = Factory(self.clock)
-        self.settings = validate_settings({"rotator_port": "COM10", "radio_port": "COM11", "rotator_max_azimuth": 450})
+        self.settings = validate_settings({"rotator_port": "COM10", "radio_port": "COM11", "rotator_max_azimuth": 450, "rotator_enabled": True, "radio_enabled": True})
         self.controller = HardwareController(self.factory, lambda: [{"device": "COM10"}, {"device": "COM11"}], self.clock)
         self.row = dict(name="ISS", status="tracking", elevation=20, azimuth=359.5, range_rate_km_s=-5)
         self.row["doppler"] = doppler(self.settings["satellite_profiles"]["ISS"], -5)

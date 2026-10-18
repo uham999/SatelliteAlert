@@ -1,5 +1,41 @@
 # Verification record
 
+## Automatic acknowledgement, chosen alarm volume and optional equipment — 18 October 2026
+
+- **178 offline Python tests passed** on Windows with **Python 3.12.14** and
+  **3.14.8**. New checks cover the default 60-second deadline and exact boundary,
+  independent overlapping alarms, repeat chimes not extending deadlines,
+  persistence across restarts, migration of older alert history, manual mode,
+  early manual acknowledgement, and updated policy for already pending alarms.
+  An actual local HTTP test saves the duration/volume and observes automatic
+  acknowledgement through the dashboard API using an injected clock.
+- **42 dashboard DOM checks passed**, including the new default options, saved
+  duration and volume, disabling unused numeric inputs, notification-only mode,
+  automatic acknowledgement in history, and closing browser notifications when
+  the acknowledged state arrives. These use jsdom; no rendered-screen inspection
+  is claimed.
+- A fake muted playback endpoint verifies setting the requested percentage,
+  unmuting, and confirmed readback before WAV playback. Volume-control failures
+  still attempt playback and report the failure. Tests do not alter the real PC
+  volume or require speakers. Real default-device volume was read only; Win32
+  popup API exports and signatures loaded successfully without showing a popup.
+- Native popup tests use fake Win32 APIs. They verify dismissal after automatic
+  acknowledgement or app shutdown, while targeting only the popup's creating
+  thread and matching dialog class/title. Closing a message alone does not
+  acknowledge its saved alert. No other application window is enumerated.
+- Both device enable flags default false for new installations. Existing saved
+  enable choices and serial selections remain intact. Serial test fixtures now
+  opt into their devices explicitly; disabled defaults reject starting live
+  hardware control. No physical radio or rotator was used during verification.
+- The preview was restarted successfully and served the updated Settings page.
+  Its state reports automatic acknowledgement enabled, 60 seconds, and the
+  configurable volume initially at the previous 100% level. Existing enabled
+  device preferences were retained; live tracking and the radio test remained off.
+- Distribution packaging excludes personal `settings.json` and `data/` and
+  includes `settings.example.json`. A fresh launch creates notification-only
+  settings; upgrades retain the existing runtime settings instead of replacing
+  them with a packaged personal configuration.
+
 ## Satellite notification pauses and frequency lookup — 15 October 2026
 
 - **156 offline Python tests passed** on Windows with both Python **3.12.14**

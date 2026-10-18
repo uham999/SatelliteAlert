@@ -29,11 +29,13 @@ from orbits import (
 from hardware import HardwareController, available_ports, select_target
 from profiles import doppler, DEFAULT_PROFILES
 from frequency_lookup import FrequencyLookup
-from windows_audio import maximize_windows_volume
+from windows_audio import set_windows_volume
+from windows_notifications import show_windows_popup
 
 ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger("satellite_alert")
 PAUSE_SETTINGS = {"automatic_pause_enabled", "automatic_pause_start", "automatic_pause_hours"}
+ALARM_SETTINGS = {"windows_maximum_volume", "windows_volume_percent", "auto_acknowledge_enabled", "auto_acknowledge_seconds"}
 HARDWARE_SETTINGS = {"satellite_profiles", "rotator_enabled", "rotator_port", "rotator_baud", "rotator_max_azimuth",
                      "radio_enabled", "radio_port", "radio_baud", "radio_address", "radio_step_hz", "tracking_minimum_mode"}
 
@@ -71,14 +73,14 @@ class SoundPlayer:
         self.status = "Windows WAV audio · use Test alert to check" if self.windows else "Enable browser sound in the dashboard"
         self.busy = threading.Lock()
 
-    def play(self, maximize_volume=False):
+    def play(self, volume_percent=None):
         if not self.windows or not self.busy.acquire(blocking=False):
             return
         volume_status = ''
-        if maximize_volume:
+        if volume_percent is not None:
             try:
-                maximize_windows_volume()
-                volume_status = ' · Windows volume 100%, unmuted'
+                set_windows_volume(volume_percent)
+                volume_status = f' · Windows volume {volume_percent:g}%, unmuted'
             except Exception as error:
                 volume_status = f' · Could not set Windows volume: {error}'
                 LOG.exception('Unable to set Windows playback volume; playing at current volume')
@@ -165,6 +167,7 @@ class Monitor:
         except (ValueError, KeyError, TypeError, OSError):
             LOG.exception("Alert history could not be read")
             self.warnings.append("Alert history could not be read; a pass may alert again.")
+        self._auto_acknowledge(self.clock())
         try:
             cache = read_json(self.data / "elements.json", None)
             if cache:
@@ -230,7 +233,7 @@ class Monitor:
             if "latitude" in values or "longitude" in values:
                 combined["location_note"] = ""
             settings = validate_settings(combined)
-            recalculate = any(settings[key] != self.settings[key] for key in settings if key not in PAUSE_SETTINGS | HARDWARE_SETTINGS | {"earth_overlay", "windows_maximum_volume", "satellite_notifications_paused"})
+            recalculate = any(settings[key] != self.settings[key] for key in settings if key not in PAUSE_SETTINGS | HARDWARE_SETTINGS | ALARM_SETTINGS | {"earth_overlay", "satellite_notifications_paused"})
             hardware_changed = any(settings[key] != self.settings[key] for key in HARDWARE_SETTINGS | {"latitude", "longitude", "observer_height_m", "minimum_elevation", "satellites"})
             pause_changed = any(settings[key] != self.settings[key] for key in PAUSE_SETTINGS)
             if hardware_changed:
@@ -249,6 +252,7 @@ class Monitor:
                 for alert in self.alerts:
                     alert["acknowledged"] = True
                 self._persist_alerts()
+            self._auto_acknowledge(self.clock())
             self._update_tracking()
         if recalculate:
             self.wake.set()
@@ -300,8 +304,26 @@ class Monitor:
     def acknowledge(self, alert_id: str | None = None):
         with self.lock:
             for alert in self.alerts:
-                if alert_id is None or alert["id"] == alert_id:
+                if not alert["acknowledged"] and (alert_id is None or alert["id"] == alert_id):
                     alert["acknowledged"] = True
+                    alert["acknowledgement_source"] = "manual"
+                    alert["acknowledged_at"] = iso(self.clock())
+            self._persist_alerts()
+
+    def _auto_acknowledge(self, now):
+        """A wall-clock deadline survives restarts and never resets on repeat chimes."""
+        changed = False
+        for alert in self.alerts:
+            if alert["acknowledged"]:
+                continue
+            deadline = (datetime.fromisoformat(alert["created_at"]) + timedelta(seconds=self.settings["auto_acknowledge_seconds"])) if self.settings["auto_acknowledge_enabled"] else None
+            if alert.get("auto_acknowledge_at") != iso(deadline):
+                alert["auto_acknowledge_at"] = iso(deadline)
+                changed = True
+            if deadline and now >= deadline:
+                alert.update(acknowledged=True, acknowledged_at=iso(now), acknowledgement_source="automatic")
+                changed = True
+        if changed:
             self._persist_alerts()
 
     def toggle_pause(self, paused: bool):
@@ -430,6 +452,7 @@ class Monitor:
             now = self.clock()
             self.last_tick = now
             self._update_pause(now)
+            self._auto_acknowledge(now)
             rows = {row["name"]: row for row in self.satellite_status}
             ready = set()
             for name, satellite, observer in self.models:
@@ -484,17 +507,19 @@ class Monitor:
             message = f"{name} is at or above {self.settings['minimum_elevation']}°."
         return dict(id=secrets.token_hex(8), name=name, test=test, created_at=iso(now), expires_at=iso(end),
                     elevation=round(elevation, 1), peak_elevation=round(peak, 1), acknowledged=False,
+                    auto_acknowledge_at=iso(now + timedelta(seconds=self.settings["auto_acknowledge_seconds"])) if self.settings["auto_acknowledge_enabled"] else None,
                     alert_mode=self.settings["alert_mode"], horizon_rise=iso(horizon_rise), message=message)
 
     def _ring(self):
         self.last_sound_at = time.monotonic()
-        self.sound.play(maximize_volume=self.settings["windows_maximum_volume"])
+        self.sound.play(volume_percent=self.settings["windows_volume_percent"] if self.settings["windows_maximum_volume"] else None)
         self.sound_serial += 1
 
     def test_alert(self):
         with self.lock:
             now = self.clock()
-            alert = self._make_alert("TEST", True, now, now + timedelta(seconds=60), 35, 65)
+            duration = self.settings["auto_acknowledge_seconds"] if self.settings["auto_acknowledge_enabled"] else 60
+            alert = self._make_alert("TEST", True, now, now + timedelta(seconds=duration), 35, 65)
             self.alerts.append(alert)
             self._persist_alerts()
             if self.settings["sound_enabled"]:
@@ -504,10 +529,17 @@ class Monitor:
     def _popup(self, alerts):
         def show():
             try:
-                import ctypes
                 message = "\n\n".join(alert["message"] + f"\nPredicted peak: {alert['peak_elevation']}°" for alert in alerts)
                 message += "\n\nAcknowledge this alert in Satellite Alert using Acknowledge & silence."
-                ctypes.windll.user32.MessageBoxW(None, message, "Satellite pass alert", 0x40 | 0x10000 | 0x40000)
+                if self.settings["auto_acknowledge_enabled"]:
+                    message += f"\nAutomatic acknowledgement after {self.settings['auto_acknowledge_seconds']:g} seconds."
+                ids = {alert["id"] for alert in alerts}
+
+                def acknowledged():
+                    with self.lock:
+                        return not any(alert["id"] in ids and not alert["acknowledged"] for alert in self.alerts)
+
+                show_windows_popup(message, acknowledged, self.stop)
             except Exception:
                 LOG.exception("Windows popup failed; dashboard alert remains visible")
         threading.Thread(target=show, name="pass-popup", daemon=True).start()
@@ -524,6 +556,7 @@ class Monitor:
         with self.lock:
             now = self.clock()
             self._update_pause(now)
+            self._auto_acknowledge(now)
             windows = [{**pass_.to_json(self.settings["alert_mode"]), "notifications_paused": self.notifications_paused(pass_.name)}
                        for pass_ in self.passes if pass_.threshold_set > now]
             pending = [pass_.to_json(self.settings["alert_mode"]) for pass_ in self.passes

@@ -223,7 +223,8 @@ A real alert gives you:
 
 - A large pulsing amber banner, with a reduced-motion alternative.
 - A Windows chime, repeated every 30 seconds until acknowledged or the useful
-  window ends. You can change/disable the sound in Settings.
+  window ends. Automatic acknowledgement defaults to **60 seconds (1 minute)**.
+  You can change/disable the sound or choose manual acknowledgement in Settings.
 - A Windows popup, enabled by default, that can appear over other applications.
   Press OK to close the message, then acknowledge the alert in the app. You can
   disable the popup in Settings.
@@ -231,26 +232,48 @@ A real alert gives you:
   browser's permission decision. They are additional to the Windows popup.
 
 **Test alert** is clearly labelled TEST. It plays the chime and shows the dashboard
-banner for up to 60 seconds, without opening a Windows popup. Acknowledging silences
+banner using your automatic-acknowledgement duration, without opening a Windows
+popup. In manual mode the test's sound ends after 60 seconds. Acknowledging silences
 it immediately. A paused app still permits an explicitly requested test. The button
 also enables browser audio for that tab, including on Windows. The dashboard reports
 when the browser blocks audio instead of claiming that sound is enabled. The
 **Play an audible alert** setting still controls both alert sound sources.
 
-Real alerts stay in the app banner until you press **Acknowledge & silence**,
-including after closing a Windows message, pausing alerts or the pass ending.
-The banner appears above every app page. **Alert history** also has an
-**Acknowledge** button for each unacknowledged entry. Clicking a browser desktop
-notification opens the live dashboard. An expired alert remains available to
-acknowledge, but its chime and notifications stop when its useful window ends.
+In **Settings → When to alert**, **Automatically acknowledge alarms after the
+duration below** is checked by default. Set **Alarm duration before automatic
+acknowledgement (seconds)**; the default is **60**, and the range is 1–86,400.
+Each alert has its own deadline measured from its first notification. Repeat
+chimes, another overlapping pass, pauses and restarting the server do not reset
+it. The Python server applies the deadline even with the browser closed; its
+2-second monitoring cycle can add up to about 2 seconds before acknowledgement.
+If the server is stopped, an overdue alert acknowledges when it next starts.
 
-**Set Windows volume to 100% before the chime** is enabled by default in
-Settings. Immediately before native playback, the app sets the default
-multimedia playback device to maximum, unmutes it and checks the readback using
+Automatic acknowledgement silences repeat chimes, closes the in-app banner and
+its Windows popup, and keeps the record in **Alert history** as **AUTO
+ACKNOWLEDGED**. Open browser notifications close when the dashboard next receives
+the acknowledgement. A pass that was acknowledged does not alert again.
+**Acknowledge & silence** can end an alarm earlier. Changes to the duration or
+automatic/manual option apply to pending alarms from their original start time;
+shortening it past an alarm's age acknowledges that alarm immediately.
+
+Uncheck automatic acknowledgement for the previous manual behavior. Real alerts
+then stay in the app banner until you press **Acknowledge & silence**, including
+after closing a Windows message, pausing alerts or the pass ending. The banner
+appears above every app page. **Alert history** also has an **Acknowledge** button
+for each unacknowledged entry. Clicking a browser desktop notification opens the
+live dashboard. An expired manual alert remains available to acknowledge, but
+its chime and notifications stop when its useful window ends.
+
+**Set Windows volume and unmute before each alarm chime** is enabled by default
+in Settings. Choose **Windows alarm volume (%)** from **1 to 100**. The initial
+value is **100%**, preserving the previous full-volume setting; choose any lower
+level you prefer. Immediately before native playback, the app sets the default
+multimedia playback device to that level, unmutes it and checks the readback using
 [Windows Core Audio](https://learn.microsoft.com/en-us/windows/win32/api/endpointvolume/nf-endpointvolume-iaudioendpointvolume-setmastervolumelevelscalar).
 This applies to real alerts, repeat chimes and Test alert. The device remains at
-100% until you change its volume. Disable the setting to use your current volume;
-changing this setting does not acknowledge alerts or recalculate passes. If the
+the chosen level until you change its volume. Disable the setting to keep your
+current volume and mute state. On other platforms the system volume is unchanged.
+Volume changes do not acknowledge alerts or recalculate passes. If the
 device cannot be controlled, the chime still plays at the current volume and the
 sound status reports the volume error. No additional Python library is needed.
 
@@ -274,9 +297,10 @@ The schedule follows the **computer running Python's local clock**, even if you
 choose UTC for the pass table. It uses local clock hours, so midnight to 7am still
 ends at 7am when daylight-saving changes the clock. Positions, forecasts and
 orbital downloads continue during both automatic and manual pauses. Notifications,
-new alerts and repeat chimes are suppressed; existing messages stay available to
-acknowledge in the app. An explicit
-**Test alert** remains available. An already open Windows popup is not closed.
+new alerts and repeat chimes are suppressed. Existing messages stay available to
+acknowledge in the app until their automatic deadline, or until you acknowledge
+them manually. An explicit **Test alert** remains available. A pause alone does
+not close an already open Windows popup; acknowledgement closes it.
 
 Whenever either kind of pause applies, the dashboard displays:
 **“Alerts are paused. Positions and orbital data continue to update.”**
@@ -331,8 +355,20 @@ and label background keeping the purple ground station visible.
 
 ## Rotator and IC-9700 setup
 
-Live equipment control starts **off on every program launch**. Configure and save
-Settings, then press **Start live tracking** at the top of the live page. Press
+New installations have both **Enable rotator control for live tracking** and
+**Enable radio control for Doppler adjustments** **unchecked** in Settings.
+Notification-only operation needs no radio or rotator. Positions, pass predictions,
+frequency previews and alerts continue with both controls disabled. Existing
+saved device choices, ports and baud rates are retained when upgrading.
+The distribution includes `settings.example.json`; the program creates
+`settings.json` on first launch. Keep your existing `settings.json` and `data/`
+when upgrading to retain your station settings and alert history.
+
+Enable the devices you want to use and save Settings. The devices are independent:
+choose radio only, rotator only or both. The main **Start live tracking** button
+becomes available when at least one device is enabled. Live equipment control
+also starts **off on every program launch**. Press **Start live tracking** at the
+top of the live page to begin. Press
 **Stop live tracking** to send the rotator stop command and close both serial
 connections. You can enable the radio, rotator, or both in Settings.
 
@@ -583,7 +619,8 @@ Stop with **How it works → Stop app**, or Ctrl+C in the program's terminal.
 - `orbits.py`: TLE validation, satellite identities and orbital calculations.
 - `hardware.py`: GS-232B pointing and acknowledged/read-back CI-V tuning.
 - `profiles.py`: editable satellite frequency defaults and Doppler calculation.
-- `windows_audio.py`: native Windows playback-volume control and readback.
+- `windows_audio.py`: configurable Windows playback volume, unmute and readback.
+- `windows_notifications.py`: native pass popups dismissed on acknowledgement.
 - `static/`: self-contained dashboard; no internet fonts/scripts are loaded.
 - `settings.json`: editable settings, also editable through the dashboard.
 - `settings.example.json`: starting settings; the app also creates defaults

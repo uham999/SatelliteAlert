@@ -13,7 +13,7 @@ class PassRadioTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.factory = Factory(self.clock)
-        self.settings = validate_settings({'rotator_enabled': False, 'radio_port': 'COM11'})
+        self.settings = validate_settings({'rotator_enabled': False, 'radio_enabled': True, 'radio_port': 'COM11'})
         self.now = datetime(2026, 10, 8, 12, 35, tzinfo=timezone.utc)
         self.controller = HardwareController(self.factory, lambda: [{'device': 'COM11'}], self.clock,
                                              utc_clock=lambda: self.now)
