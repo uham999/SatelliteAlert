@@ -1,5 +1,27 @@
 # Verification record
 
+## Restore previous volume and simplify connection-test controls — 18 October 2026
+
+- **190 Python tests passed on Python 3.12.14 and 3.14.8**, and **44 dashboard
+  DOM checks passed**. The checks use simulated audio/serial devices and jsdom;
+  no speaker, physical radio/rotator or rendered-screen claim is made.
+- Before changing Windows alarm volume, the app saves the original scalar level
+  and mute state. Both manual and automatic acknowledgement restore them. Tests
+  cover previously muted and unmuted output, zero original volume, repeat chimes,
+  overlapping alarms, graceful shutdown, restart recovery, and restoration failure
+  with retry. An overlapping group restores only after its last acknowledgement.
+  All volume changes in these tests use a fake endpoint and fake WAV playback.
+- Recovery state is saved before the volume change in `data/volume-restore.json`.
+  Tests verify recovery across an interrupted process, an acknowledgement saved
+  before restoration completes, journal cleanup after success, and visible error
+  status when restoration fails.
+- Each home connection-test button now follows its corresponding saved device
+  enable setting independently. Both start hidden until settings arrive. DOM
+  checks exercise all four enable combinations and verify that Test alert remains
+  available. Live tracking, satellite predictions and serial protocols are unchanged.
+- Both satellite pause checkboxes use exactly: **Pause notifications for this
+  satellite until you uncheck this**. Existing saved pause values are retained.
+
 ## Automatic acknowledgement, chosen alarm volume and optional equipment — 18 October 2026
 
 - **178 offline Python tests passed** on Windows with **Python 3.12.14** and

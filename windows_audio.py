@@ -90,6 +90,29 @@ def get_windows_volume():
         return volume.state()
 
 
+def validate_volume_state(state):
+    if not isinstance(state, dict) or not isinstance(state.get('muted'), bool):
+        raise ValueError('Saved playback state must contain a level and mute state.')
+    level = state.get('level')
+    if isinstance(level, bool) or not isinstance(level, (int, float)) or not math.isfinite(level) or not 0 <= level <= 1:
+        raise ValueError('Saved playback volume must be between zero and one.')
+    return dict(level=float(level), muted=state['muted'])
+
+
+def restore_windows_volume(state):
+    """Restore an original scalar level (including zero) and its mute state."""
+    saved = validate_volume_state(state)
+    with _endpoint() as volume:
+        if saved['muted']:
+            volume.set_mute(True)
+        volume.set_level(saved['level'])
+        volume.set_mute(saved['muted'])
+        actual = volume.state()
+        if actual['muted'] != saved['muted'] or abs(actual['level'] - saved['level']) > .001:
+            raise OSError('Windows did not confirm the restored playback volume and mute state.')
+        return actual
+
+
 def maximize_windows_volume():
     """Set 100 percent, unmute, and confirm the playback endpoint's readback."""
     return set_windows_volume(100)

@@ -143,7 +143,7 @@ class AlarmSettingsTests(unittest.TestCase):
             self.monitor.tick()
             self.assertEqual(self.monitor.alerts[0]['auto_acknowledge_at'], deadline)
             self.assertEqual(play.call_count, 2)
-            play.assert_called_with(volume_percent=55)
+            play.assert_called_with(volume_percent=55, alert_ids=[self.monitor.alerts[0]['id']])
             self.now += timedelta(seconds=30);mono.return_value = 160
             self.monitor.tick()
             self.assertTrue(self.monitor.alerts[0]['acknowledged'])
@@ -155,10 +155,10 @@ class AlarmSettingsTests(unittest.TestCase):
         with patch.object(self.monitor.sound, 'play') as play:
             self.monitor.save_settings({'windows_volume_percent': 37})
             self.monitor.test_alert()
-            play.assert_called_with(volume_percent=37)
+            play.assert_called_with(volume_percent=37, alert_ids=[self.monitor.alerts[0]['id']])
             self.monitor.save_settings({'windows_maximum_volume': False})
             self.monitor.test_alert()
-            play.assert_called_with(volume_percent=None)
+            play.assert_called_with(volume_percent=None, alert_ids=[alert['id'] for alert in self.monitor.alerts])
         self.assertFalse(any(alert['acknowledged'] for alert in self.monitor.alerts))
 
     def test_notification_only_defaults_cannot_start_hardware_without_opt_in(self):

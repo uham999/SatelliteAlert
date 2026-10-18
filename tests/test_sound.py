@@ -11,6 +11,10 @@ from satellite_alert import ROOT, SoundPlayer
 
 
 class SoundTests(unittest.TestCase):
+    def setUp(self):
+        capture = patch('satellite_alert.get_windows_volume', return_value={'level': .2, 'muted': True})
+        capture.start()
+        self.addCleanup(capture.stop)
     def test_bundled_chime_is_valid_audible_pcm_without_clipping(self):
         with wave.open(str(ROOT / 'static/alert-chime.wav'), 'rb') as clip:
             self.assertEqual((clip.getnchannels(), clip.getsampwidth(), clip.getframerate()), (1, 2, 32000))

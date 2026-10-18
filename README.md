@@ -270,9 +270,18 @@ value is **100%**, preserving the previous full-volume setting; choose any lower
 level you prefer. Immediately before native playback, the app sets the default
 multimedia playback device to that level, unmutes it and checks the readback using
 [Windows Core Audio](https://learn.microsoft.com/en-us/windows/win32/api/endpointvolume/nf-endpointvolume-iaudioendpointvolume-setmastervolumelevelscalar).
-This applies to real alerts, repeat chimes and Test alert. The device remains at
-the chosen level until you change its volume. Disable the setting to keep your
-current volume and mute state. On other platforms the system volume is unchanged.
+This applies to real alerts, repeat chimes and Test alert. Before the first alarm
+changes the volume, the app saves the PC's current level and mute state. Manual
+or automatic acknowledgement restores both. Repeated chimes keep the original
+saved state; when alarms overlap, restoration waits until the last alarm in that
+group is acknowledged. A previously muted PC returns to muted, including an
+original level of zero.
+
+The saved state survives a server restart in `data/volume-restore.json` and is
+removed after successful restoration. Stopping the app normally also restores
+it. A restore error appears in the sound status and is retried every 10 seconds.
+Disable volume control to keep the PC's current volume and mute state throughout
+the alarm. On other platforms the system volume is unchanged.
 Volume changes do not acknowledge alerts or recalculate passes. If the
 device cannot be controlled, the chime still plays at the current volume and the
 sound status reports the volume error. No additional Python library is needed.
@@ -326,7 +335,7 @@ Pause controls apply immediately when saved, without recalculating or
 acknowledging an existing pass alert.
 
 In **Settings → Satellites & frequencies**, each satellite has a **Pause
-notifications until I uncheck this** checkbox. Checking it saves immediately and
+notifications for this satellite until you uncheck this** checkbox. Checking it saves immediately and
 silences that satellite's chimes, Windows popups, browser notifications and
 dashboard alert banner until you uncheck it, including after restarting the app.
 Other satellites continue to alert. Existing alerts remain in history for
@@ -446,10 +455,12 @@ mean the radio has tuned.
 
 ## Test the rotator connection
 
-Press **Test rotator connection** at the top of the live monitor. It sends one
+The **Test rotator connection** button appears at the top of the live monitor
+only while **Enable rotator control for live tracking** is checked and saved in
+Settings. Press it to send one
 `C2` command, terminated by carriage return, using your **saved rotator port and
-baud rate**. It works independently of the rotator's live-tracking enable
-checkbox and alert pauses. An unconfigured or unavailable port produces a
+baud rate**. It works without starting live tracking and during alert pauses.
+An unconfigured or unavailable port produces a
 visible warning without sending a command.
 
 The result panel shows the **test date/time**, port, baud, **raw C2 reply** and
@@ -472,7 +483,9 @@ control cannot also be used for the rotator test.
 
 ## Test the radio connection
 
-Press **Test radio connection** on the live monitor. It uses the saved radio
+The **Test radio connection** button appears on the live monitor only while
+**Enable radio control for Doppler adjustments** is checked and saved in Settings.
+It uses the saved radio
 COM port, baud and CI-V address, selects the MAIN VFO and alternates
 **145.000 MHz** and **145.555 MHz** every **2 seconds**. If VHF is currently on
 SUB, it exchanges the bands onto MAIN before tuning. Each change requires a
@@ -484,8 +497,8 @@ Press the button again to stop and close the port; the radio stays at its last
 test frequency. Missing replies, rejected commands and incorrect readback stop
 the test and display the error.
 
-The test works without a visible satellite, independently of alert pauses and
-the radio's live-tracking enable checkbox. Starting it stops live tracking and
+The test works without a visible satellite and independently of alert pauses.
+Starting it stops live tracking and
 the rotator. Stop the test before starting live tracking again. No PTT or
 memory-write command is sent. The Python process runs the timing, so closing
 the browser does not stop it; restarting the program always starts with both

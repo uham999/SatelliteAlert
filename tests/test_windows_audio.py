@@ -3,7 +3,7 @@ from contextlib import nullcontext
 import unittest
 from unittest.mock import patch
 
-from windows_audio import GUID, _check, maximize_windows_volume, set_windows_volume
+from windows_audio import GUID, _check, maximize_windows_volume, restore_windows_volume, set_windows_volume
 
 
 class Endpoint:
@@ -21,6 +21,29 @@ class Endpoint:
 
 
 class VolumeTests(unittest.TestCase):
+    def test_restore_exact_original_level_and_mute_state_including_zero(self):
+        for level, muted in ((0, True), (.23, True), (.37, False), (1, False)):
+            with self.subTest(level=level, muted=muted):
+                endpoint = Endpoint()
+                endpoint.level, endpoint.muted = 1, False
+                saved = dict(level=level, muted=muted)
+                with patch('windows_audio._endpoint', return_value=nullcontext(endpoint)):
+                    self.assertEqual(restore_windows_volume(saved), saved)
+                self.assertEqual(endpoint.calls[-2:], [('level', level), ('mute', muted)])
+                if muted:
+                    self.assertEqual(endpoint.calls[0], ('mute', True))
+
+    def test_invalid_saved_state_and_unconfirmed_restore_do_not_claim_success(self):
+        with patch('windows_audio._endpoint') as endpoint:
+            for saved in (None, {}, {'level': 1.1, 'muted': True}, {'level': .2, 'muted': 'true'}, {'level': float('nan'), 'muted': False}):
+                with self.subTest(saved=saved), self.assertRaises(ValueError):
+                    restore_windows_volume(saved)
+            endpoint.assert_not_called()
+        endpoint = Endpoint()
+        with patch('windows_audio._endpoint', return_value=nullcontext(endpoint)), patch.object(endpoint, 'state', return_value={'level': 1, 'muted': False}):
+            with self.assertRaises(OSError):
+                restore_windows_volume({'level': .2, 'muted': True})
+
     def test_specified_level_unmutes_before_playback_and_confirms_readback(self):
         for percent in (1, 35, 65.5, 100):
             with self.subTest(percent=percent):

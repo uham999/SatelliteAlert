@@ -29,7 +29,7 @@ from orbits import (
 from hardware import HardwareController, available_ports, select_target
 from profiles import doppler, DEFAULT_PROFILES
 from frequency_lookup import FrequencyLookup
-from windows_audio import set_windows_volume
+from windows_audio import get_windows_volume, restore_windows_volume, set_windows_volume, validate_volume_state
 from windows_notifications import show_windows_popup
 
 ROOT = Path(__file__).resolve().parent
@@ -68,22 +68,75 @@ def download_elements() -> str:
 
 class SoundPlayer:
     """Windows audio works even when the browser tab is in the background."""
-    def __init__(self):
+    def __init__(self, restore_path=None):
         self.windows = sys.platform == "win32"
         self.status = "Windows WAV audio · use Test alert to check" if self.windows else "Enable browser sound in the dashboard"
         self.busy = threading.Lock()
+        self.volume_lock = threading.RLock()
+        self.restore_path = restore_path
+        self.volume_restore = None
+        self.volume_status = ""
+        self.restore_retry_at = 0.0
+        if restore_path:
+            try:
+                saved = read_json(restore_path, None)
+                if saved is not None:
+                    original = validate_volume_state(saved['original'])
+                    ids = saved['alert_ids']
+                    if not isinstance(ids, list) or not all(isinstance(value, str) and 1 <= len(value) <= 128 for value in ids):
+                        raise ValueError('Invalid volume-restoration alert identifiers.')
+                    self.volume_restore = dict(original=original, alert_ids=ids)
+            except (KeyError, TypeError, ValueError, OSError):
+                self.volume_status = "Saved playback state could not be read; the previous volume cannot be recovered."
+                LOG.exception('Cannot read saved alarm playback state')
 
-    def play(self, volume_percent=None):
-        if not self.windows or not self.busy.acquire(blocking=False):
+    def _remember_volume(self, alert_ids):
+        original = self.volume_restore['original'] if self.volume_restore else validate_volume_state(get_windows_volume())
+        ids = set(self.volume_restore['alert_ids'] if self.volume_restore else []) | set(alert_ids)
+        saved = dict(original=original, alert_ids=sorted(ids))
+        if saved != self.volume_restore and self.restore_path:
+            # Save before changing the endpoint so a restart can recover it.
+            atomic_json(self.restore_path, saved)
+        self.volume_restore = saved
+
+    def restore_if_finished(self, pending_ids, force=False):
+        with self.volume_lock:
+            saved = self.volume_restore
+            if not self.windows or not saved or (not force and set(saved['alert_ids']).intersection(pending_ids)):
+                return
+            if not force and time.monotonic() < self.restore_retry_at:
+                return
+            try:
+                restore_windows_volume(saved['original'])
+                if self.restore_path:
+                    self.restore_path.unlink(missing_ok=True)
+                self.volume_restore = None
+                original = saved['original']
+                self.volume_status = f"Previous PC volume {original['level'] * 100:g}% and {'muted' if original['muted'] else 'unmuted'} state restored."
+                self.restore_retry_at = 0.0
+            except Exception as error:
+                self.volume_status = f"Could not restore previous PC volume: {error}. Retrying shortly."
+                self.restore_retry_at = time.monotonic() + 10
+                LOG.exception('Cannot restore playback volume after the alarm')
+
+    def play(self, volume_percent=None, alert_ids=()):
+        if not self.windows:
             return
         volume_status = ''
-        if volume_percent is not None:
+        with self.volume_lock:
             try:
-                set_windows_volume(volume_percent)
-                volume_status = f' · Windows volume {volume_percent:g}%, unmuted'
+                if volume_percent is not None or self.volume_restore:
+                    self._remember_volume(alert_ids)
+                if volume_percent is not None:
+                    set_windows_volume(volume_percent)
+                    volume_status = f' · Windows volume {volume_percent:g}%, unmuted'
+                    self.volume_status = 'Alarm volume active; the previous level and mute state will be restored after acknowledgement.'
             except Exception as error:
                 volume_status = f' · Could not set Windows volume: {error}'
+                self.volume_status = f'Could not set Windows alarm volume: {error}'
                 LOG.exception('Unable to set Windows playback volume; playing at current volume')
+            if not self.busy.acquire(blocking=False):
+                return
 
         def run():
             try:
@@ -111,7 +164,7 @@ class Monitor:
                 for key in ("radio_port", "radio_baud", "rotator_port", "rotator_baud")):
             atomic_json(root / "settings.json", {**saved_settings, **self.settings})
         self.calculator = OrbitCalculator()
-        self.sound = SoundPlayer()
+        self.sound = SoundPlayer(self.data / "volume-restore.json")
         self.hardware = HardwareController()
         self.frequency_lookup = FrequencyLookup()
         self.tracking_target = None
@@ -215,6 +268,7 @@ class Monitor:
         for thread in self.threads:
             thread.join(timeout=2)
         self.hardware.close()
+        self.sound.restore_if_finished(set(), force=True)
 
     def next_refresh(self):
         due = self.fetched_at + timedelta(hours=self.settings["refresh_hours"]) if self.fetched_at else self.clock()
@@ -309,6 +363,10 @@ class Monitor:
                     alert["acknowledgement_source"] = "manual"
                     alert["acknowledged_at"] = iso(self.clock())
             self._persist_alerts()
+            self._restore_finished_alarm_volume()
+
+    def _restore_finished_alarm_volume(self):
+        self.sound.restore_if_finished({alert['id'] for alert in self.alerts if not alert['acknowledged']})
 
     def _auto_acknowledge(self, now):
         """A wall-clock deadline survives restarts and never resets on repeat chimes."""
@@ -325,6 +383,7 @@ class Monitor:
                 changed = True
         if changed:
             self._persist_alerts()
+        self._restore_finished_alarm_volume()
 
     def toggle_pause(self, paused: bool):
         if not isinstance(paused, bool):
@@ -512,7 +571,10 @@ class Monitor:
 
     def _ring(self):
         self.last_sound_at = time.monotonic()
-        self.sound.play(volume_percent=self.settings["windows_volume_percent"] if self.settings["windows_maximum_volume"] else None)
+        now = self.clock()
+        ids = [alert['id'] for alert in self.alerts if not alert['acknowledged'] and datetime.fromisoformat(alert['expires_at']) > now
+               and (alert['test'] or (not self.paused and not self.notifications_paused(alert['name'])))]
+        self.sound.play(volume_percent=self.settings["windows_volume_percent"] if self.settings["windows_maximum_volume"] else None, alert_ids=ids)
         self.sound_serial += 1
 
     def test_alert(self):
@@ -579,7 +641,7 @@ class Monitor:
                         warnings=list(self.warnings), paused=self.paused, sound_serial=self.sound_serial,
                         pause_reason=self.pause_reason, automatic_pause_active=self.automatic_pause_active,
                         automatic_pause_overridden=self.automatic_pause_overridden,
-                        native_sound=self.sound.windows, sound_status=self.sound.status, source=TLE_URL)
+                        native_sound=self.sound.windows, sound_status=self.sound.status, volume_status=self.sound.volume_status, source=TLE_URL)
 
     def filtered_elements(self):
         with self.lock:

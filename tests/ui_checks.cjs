@@ -510,7 +510,30 @@ test('fresh defaults select one-minute automatic acknowledgement and notificatio
   assert.equal(fields.windows_volume_percent.value,'100');assert.equal(fields.windows_maximum_volume.checked,true);
   assert.equal(fields.rotator_enabled.checked,false);assert.equal(fields.radio_enabled.checked,false);
   assert.equal($('trackingToggle').disabled,true);assert.match($('trackingNotice').textContent,/Notification-only mode/);
+  assert.ok($('radioTestToggle').classList.contains('hidden'));assert.ok($('rotatorTest').classList.contains('hidden'));
   assert.match($('fleet').textContent,/ISS/);assert.match($('liveTarget').textContent,/ISS/);
+});
+
+test('home connection-test buttons independently follow saved radio and rotator enable choices',async t=>{
+  const {$,w,server,refresh}=await dashboard(t),fields=$('settingsForm').elements;
+  for(const [rotator,radio] of [[false,false],[true,false],[false,true],[true,true]]){
+    fields.rotator_enabled.checked=rotator;fields.radio_enabled.checked=radio;
+    $('settingsForm').dispatchEvent(new w.Event('submit',{cancelable:true}));await flush();
+    assert.equal(server.settings.rotator_enabled,rotator);assert.equal(server.settings.radio_enabled,radio);
+    assert.equal($('rotatorTest').classList.contains('hidden'),!rotator);
+    assert.equal($('radioTestToggle').classList.contains('hidden'),!radio);
+    assert.ok(!$('testAlert').classList.contains('hidden'));
+  }
+  server.volume_status='Previous PC volume 20% and muted state restored.';await refresh();
+  assert.match($('soundStatus').textContent,/Previous PC volume 20% and muted state restored/);
+});
+
+test('both satellite pause checkboxes use the requested wording',async t=>{
+  const {$}=await dashboard(t);
+  const wording='Pause notifications for this satellite until you uncheck this';
+  const checkbox=$('profileList').querySelector('[data-pause-satellite="ISS"]');
+  assert.equal(checkbox.parentElement.textContent.trim(),wording);
+  $('addSatellite').click();assert.equal($('profilePause').parentElement.textContent.trim(),wording);
 });
 
 test('alarm duration and chosen volume save without acknowledging alerts or stopping live equipment',async t=>{

@@ -209,7 +209,8 @@ function renderStatus() {
   $('stationLon').textContent=`${Math.abs(s.longitude).toFixed(3)}° ${s.longitude>=0?'E':'W'}`;
   $('dataStatus').textContent=state.fetched_at ? `AMSAT · downloaded ${formatTime(state.fetched_at,false,true)}` : 'Waiting for first successful download.';
   $('refreshStatus').textContent=`${formatTime(state.next_refresh_at,false,true)} · every ${s.refresh_hours} hours`;
-  $('soundStatus').textContent=s.sound_enabled ? (browserSound ? `Browser sound enabled${state.native_sound?' · Windows WAV backup':''}` : `${state.sound_status}${state.native_sound?' · browser sound available below':''}`) : 'Sound disabled in Settings';
+  const soundStatus=s.sound_enabled ? (browserSound ? `Browser sound enabled${state.native_sound?' · Windows WAV backup':''}` : `${state.sound_status}${state.native_sound?' · browser sound available below':''}`) : 'Sound disabled in Settings';
+  $('soundStatus').textContent=soundStatus+(state.volume_status?` · ${state.volume_status}`:'');
   $('enableSound').classList.toggle('hidden',browserSound);
 }
 function render() {renderStatus();renderNext();renderFleet();renderTable();renderAlerts();renderTracking();}
@@ -327,6 +328,8 @@ function renderTracking() {
   const notificationOnly=!state.settings.rotator_enabled && !state.settings.radio_enabled;
   $('trackingToggle').disabled=Boolean(h.radio_test_enabled || (notificationOnly && !h.enabled));
   $('trackingToggle').title=notificationOnly?'Enable radio or rotator control in Settings to use live tracking.':'';
+  $('radioTestToggle').classList.toggle('hidden',!state.settings.radio_enabled);
+  $('rotatorTest').classList.toggle('hidden',!state.settings.rotator_enabled);
   $('radioTestToggle').textContent=h.radio_test_enabled?'Stop test radio connection':'Test radio connection';
   $('radioTestToggle').classList.toggle('radio-testing',Boolean(h.radio_test_enabled));
   $('radioTestToggle').setAttribute('aria-pressed',String(Boolean(h.radio_test_enabled)));
@@ -374,7 +377,7 @@ async function refreshPorts(useSaved=false) {
 }
 function renderProfiles() {
   if(!state)return;
-  $('profileList').innerHTML=state.settings.satellites.map(name=>{const p=state.settings.satellite_profiles[name];return `<article class="profile-row"><strong>${esc(name)}</strong><label class="checkbox"><input type="checkbox" data-pause-satellite="${esc(name)}" aria-label="Pause notifications for ${esc(name)}" ${satelliteNotificationsPaused(name)?'checked':''}> Pause notifications until I uncheck this</label><p>RX ${p.downlink_mhz==null?'unset':p.downlink_mhz.toFixed(6)+' MHz'} · ${esc(p.downlink_mode)}<br>TX ${p.uplink_mhz==null?'receive only':p.uplink_mhz.toFixed(6)+' MHz'} · ${esc(p.uplink_mode)}</p><p>${esc(p.notes)}</p><div class="profile-actions"><button type="button" class="button" data-edit="${esc(name)}">Edit ${esc(name)}</button><button type="button" class="text-button" data-delete="${esc(name)}">Remove ${esc(name)}</button></div></article>`;}).join('');
+  $('profileList').innerHTML=state.settings.satellites.map(name=>{const p=state.settings.satellite_profiles[name];return `<article class="profile-row"><strong>${esc(name)}</strong><label class="checkbox"><input type="checkbox" data-pause-satellite="${esc(name)}" aria-label="Pause notifications for ${esc(name)}" ${satelliteNotificationsPaused(name)?'checked':''}> Pause notifications for this satellite until you uncheck this</label><p>RX ${p.downlink_mhz==null?'unset':p.downlink_mhz.toFixed(6)+' MHz'} · ${esc(p.downlink_mode)}<br>TX ${p.uplink_mhz==null?'receive only':p.uplink_mhz.toFixed(6)+' MHz'} · ${esc(p.uplink_mode)}</p><p>${esc(p.notes)}</p><div class="profile-actions"><button type="button" class="button" data-edit="${esc(name)}">Edit ${esc(name)}</button><button type="button" class="text-button" data-delete="${esc(name)}">Remove ${esc(name)}</button></div></article>`;}).join('');
   $('profileList').querySelectorAll('[data-pause-satellite]').forEach(checkbox=>checkbox.addEventListener('change',async()=>{
     const name=checkbox.dataset.pauseSatellite,paused=checkbox.checked;checkbox.disabled=true;
     try{await post('/api/settings',{satellite_notifications_paused:{[name]:paused}});await refreshState();renderProfiles();if(editingSatellite===name)$('profilePause').checked=paused;toast(`${name} notifications ${paused?'paused until you uncheck it':'resumed'}.`);}
