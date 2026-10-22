@@ -53,7 +53,12 @@ function showView(name) {
   if (name === 'settings') fillSettings();
   if (name === 'dashboard') requestAnimationFrame(drawSky);
 }
-document.querySelectorAll('[data-view]').forEach(element=>element.addEventListener('click',()=>showView(element.dataset.view)));
+document.querySelectorAll('[data-view]').forEach(element=>element.addEventListener('click',()=>{
+  showView(element.dataset.view);
+  if(element.dataset.settingsTarget)requestAnimationFrame(()=>{
+    const target=$(element.dataset.settingsTarget);target.scrollIntoView({behavior:'smooth',block:'start'});target.focus({preventScroll:true});
+  });
+}));
 document.querySelector('.brand').addEventListener('click',event=>{event.preventDefault();showView('dashboard');});
 
 function fillSettings() {
@@ -78,19 +83,23 @@ function updateAlarmSettings() {
 }
 for(const name of ['auto_acknowledge_enabled','windows_maximum_volume'])$('settingsForm').elements.namedItem(name).addEventListener('change',updateAlarmSettings);
 function choosePass() {
-  if (!state || !state.passes.length) return null;
+  if (!state) return null;
+  const eligible=state.passes.filter(pass=>!satelliteNotificationsPaused(pass.name));
+  if(selectedName && satelliteNotificationsPaused(selectedName))selectedName=null;
+  if(selectedPass && satelliteNotificationsPaused(selectedPass.name))selectedPass=null;
   if (selectedPass) {
-    const found = state.passes.find(pass=>pass.norad === selectedPass.norad && Math.abs(new Date(pass.threshold_rise)-new Date(selectedPass.threshold_rise))<1200000);
+    const found = eligible.find(pass=>pass.norad === selectedPass.norad && Math.abs(new Date(pass.threshold_rise)-new Date(selectedPass.threshold_rise))<1200000);
     if (found) return found;
   }
-  if (selectedName) return state.passes.find(pass=>pass.name === selectedName) || null;
-  return state.passes.find(pass=>!satelliteNotificationsPaused(pass.name)) || null;
+  if (selectedName) return eligible.find(pass=>pass.name === selectedName) || null;
+  return eligible[0] || null;
 }
 function satelliteNotificationsPaused(name) {return Boolean(state && state.settings.satellite_notifications_paused?.[name]);}
 function renderNext() {
   const pass = choosePass(), settings = state.settings, minimum = settings.minimum_elevation;
   const horizon = settings.alert_mode === 'horizon', early = earlyAlertMinutes[settings.alert_mode] || 0;
   $('thresholdChip').textContent = `≥ ${minimum}° elevation`;
+  $('helpElevationHeading').textContent=`${minimum}° above your local horizon · set in Settings`;
   $('alertRule').textContent = early ? `Alerts ${early} min before horizon rise · peak ≥ ${minimum}°` : horizon ? `Alerts at horizon rise · peak ≥ ${minimum}°` : `Alerts at ${minimum}° above your horizon`;
   $('alertTimeLabel').textContent = early ? 'Early alert time' : horizon ? 'Horizon rise / alert' : `Reaches ${minimum}°`;
   $('ringLabel').textContent = `${minimum}° alert boundary`;
@@ -116,6 +125,8 @@ function updateCountdown() {
     remaining = (new Date(pass.horizon_rise)-now)/1000;label='EARLY ALERT WINDOW · TIME UNTIL HORIZON RISE';status='PASS APPROACHING';
   } else if (until <= 0 && now < new Date(pass.threshold_rise)) {
     remaining = (new Date(pass.threshold_rise)-now)/1000;label=`TIME UNTIL ${state.settings.minimum_elevation}° ELEVATION`;status='ABOVE HORIZON';
+  } else if (until <= 0 && now>=new Date(pass.threshold_set) && now<new Date(pass.horizon_set)) {
+    remaining=(new Date(pass.horizon_set)-now)/1000;label='TIME UNTIL HORIZON SET';status='PASS SETTING';
   } else if (until <= 0) {
     remaining = (new Date(pass.threshold_set)-now)/1000;label='TIME ABOVE MINIMUM REMAINING';status='PASS UNDERWAY';
   }
@@ -184,7 +195,7 @@ function renderAlerts() {
   }
   if(soundSerial!==null && state.sound_serial>soundSerial && active.length && (!state.paused || active.some(alert=>alert.test)) && browserSound && state.settings.sound_enabled) chime();
   soundSerial=state.sound_serial;
-  $('history').innerHTML=state.alerts.length ? state.alerts.map(alert=>`<div class="history-item"><div><strong>${esc(alert.test?'TEST ALERT':alert.name)}</strong> <span class="tag">${alert.acknowledged?(alert.acknowledgement_source==='automatic'?'AUTO ACKNOWLEDGED':'ACKNOWLEDGED'):alert.active?'ACTIVE':'AWAITING ACKNOWLEDGEMENT'}</span><p>${esc(alert.message)}</p></div><div class="history-actions"><time>${formatTime(alert.created_at,true,true)}</time>${!alert.acknowledged?`<button class="button" data-acknowledge="${esc(alert.id)}">Acknowledge</button>`:''}</div></div>`).join('') : '<p class="empty">No alerts yet. Use Test alert to check the banner and chime.</p>';
+  $('history').innerHTML=state.alerts.length ? state.alerts.map(alert=>`<div class="history-item"><div><strong>${esc(alert.test?'TEST ALERT':alert.name)}</strong> <span class="tag">${alert.acknowledged?(alert.acknowledgement_source==='satellite_pause'?'CANCELLED · SATELLITE PAUSED':alert.acknowledgement_source==='automatic'?'AUTO ACKNOWLEDGED':'ACKNOWLEDGED'):alert.active?'ACTIVE':'AWAITING ACKNOWLEDGEMENT'}</span><p>${esc(alert.message)}</p></div><div class="history-actions"><time>${formatTime(alert.created_at,true,true)}</time>${!alert.acknowledged?`<button class="button" data-acknowledge="${esc(alert.id)}">Acknowledge</button>`:''}</div></div>`).join('') : '<p class="empty">No alerts yet. Use Test alert to check the banner and chime.</p>';
 }
 function renderStatus() {
   const warnings=[];
@@ -218,7 +229,12 @@ function render() {renderStatus();renderNext();renderFleet();renderTable();rende
 async function refreshState() {
   const response=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(8000)});
   if(!response.ok) throw new Error('App unavailable');
-  const initial=!state;state=await response.json();disconnected=false;render();if(initial) fillSettings();
+  const previous=state,initial=!state;state=await response.json();disconnected=false;
+  if(previous){
+    const resumed=state.passes.find(pass=>previous.settings.satellite_notifications_paused?.[pass.name] && !satelliteNotificationsPaused(pass.name) && new Date(pass.horizon_rise)<=new Date(state.now) && new Date(state.now)<new Date(pass.horizon_set));
+    if(resumed){selectedPass=resumed;selectedName=null;}
+  }
+  render();if(initial) fillSettings();
 }
 async function poll() {
   try {
@@ -236,6 +252,7 @@ function drawSky() {
   if(view==='dashboard')drawSkyCanvas($('sky'));
   if($('skyDialog').open) {
     const world=$('expandedMapMode').value==='world';
+    $('groundStationKey').classList.toggle('hidden',!world);
     if(world)drawWorldCanvas($('expandedSky'));else drawSkyCanvas($('expandedSky'));
     $('expandedMapNote').textContent=world?'Gold marks the highest satellite. Purple marks your ground station at the centre. Markers show the point on Earth beneath each satellite. Positions update every 2 seconds.':'Gold marks the highest satellite. North is up; the circle edge is your local horizon. Positions update every 2 seconds.';
   }
@@ -260,10 +277,6 @@ function drawWorldCanvas(canvas) {
   ctx.beginPath();path(d3.geoGraticule10());ctx.strokeStyle='#adc8cf';ctx.lineWidth=.7;ctx.stroke();
   ctx.beginPath();ctx.moveTo(cx-9,cy);ctx.lineTo(cx+9,cy);ctx.moveTo(cx,cy-9);ctx.lineTo(cx,cy+9);
   ctx.strokeStyle='#fff';ctx.lineWidth=6;ctx.stroke();ctx.strokeStyle='#8557b2';ctx.lineWidth=3;ctx.stroke();
-  ctx.font='18px Segoe UI';ctx.textAlign='center';
-  const stationLabel='Your ground station',stationLabelWidth=ctx.measureText(stationLabel).width+14;
-  ctx.fillStyle='#ffffffdd';ctx.fillRect(cx-stationLabelWidth/2,cy+9,stationLabelWidth,25);
-  ctx.fillStyle='#634181';ctx.fillText(stationLabel,cx,cy+26);
   const visible=visibleSatellites().filter(row=>Number.isFinite(row.ground_latitude) && Number.isFinite(row.ground_longitude));
   drawSatelliteMarkers(ctx,visible,row=>projection([row.ground_longitude,row.ground_latitude]),w,h);
 }
@@ -401,8 +414,7 @@ function renderProfiles() {
   $('profileList').innerHTML=state.settings.satellites.map(name=>{const p=state.settings.satellite_profiles[name];return `<article class="profile-row"><strong>${esc(name)}</strong><label class="checkbox"><input type="checkbox" data-pause-satellite="${esc(name)}" aria-label="Pause notifications for ${esc(name)}" ${satelliteNotificationsPaused(name)?'checked':''}> Pause notifications for this satellite until you uncheck this</label><p>RX ${p.downlink_mhz==null?'unset':p.downlink_mhz.toFixed(6)+' MHz'} · ${esc(p.downlink_mode)}<br>TX ${p.uplink_mhz==null?'receive only':p.uplink_mhz.toFixed(6)+' MHz'} · ${esc(p.uplink_mode)}</p><p>${esc(p.notes)}</p><div class="profile-actions"><button type="button" class="button" data-edit="${esc(name)}">Edit ${esc(name)}</button><button type="button" class="text-button" data-delete="${esc(name)}">Remove ${esc(name)}</button></div></article>`;}).join('');
   $('profileList').querySelectorAll('[data-pause-satellite]').forEach(checkbox=>checkbox.addEventListener('change',async()=>{
     const name=checkbox.dataset.pauseSatellite,paused=checkbox.checked;checkbox.disabled=true;
-    try{await post('/api/settings',{satellite_notifications_paused:{[name]:paused}});await refreshState();renderProfiles();if(editingSatellite===name)$('profilePause').checked=paused;toast(`${name} notifications ${paused?'paused until you uncheck it':'resumed'}.`);}
-    catch(error){checkbox.checked=!paused;toast(error.message);}finally{checkbox.disabled=false;}
+    await setSatellitePaused(name,paused,checkbox);
   }));
   $('profileList').querySelectorAll('[data-edit]').forEach(button=>button.addEventListener('click',()=>editProfile(button.dataset.edit)));
   $('profileList').querySelectorAll('[data-delete]').forEach(button=>button.addEventListener('click',async()=>{
@@ -410,6 +422,12 @@ function renderProfiles() {
     try{await post('/api/settings',{satellites:names,satellite_profiles:profiles});await refreshState();renderProfiles();toast(`${name} removed.`);}catch(error){toast(error.message);}
   }));
 }
+async function setSatellitePaused(name,paused,checkbox){
+  checkbox.disabled=true;
+  try{await post('/api/settings',{satellite_notifications_paused:{[name]:paused}});await refreshState();renderProfiles();if(editingSatellite===name)$('profilePause').checked=paused;toast(`${name} ${paused?'paused immediately; its current pass is cancelled':'resumed immediately'}. No need to Save settings.`);}
+  catch(error){checkbox.checked=!paused;toast(error.message);}finally{checkbox.disabled=false;}
+}
+$('profilePause').addEventListener('change',event=>{if(editingSatellite)setSatellitePaused(editingSatellite,event.currentTarget.checked,event.currentTarget);});
 function fillProfile(p) {
   $('profileRx').value=p.downlink_mhz??'';$('profileTx').value=p.uplink_mhz??'';
   $('profileRxMode').value=p.downlink_mode||'USB';$('profileTxMode').value=p.uplink_mode||'LSB';$('profileNotes').value=p.notes||'';
@@ -420,6 +438,7 @@ function editProfile(name=null) {
   $('profileEditorTitle').textContent=name?`Edit ${name}`:'Add satellite';$('profileName').value=name||'';$('profileError').textContent='';
   $('lookupSatellite').classList.toggle('hidden',Boolean(name));$('profileLookupStatus').classList.toggle('hidden',Boolean(name));
   $('profilePause').checked=name?satelliteNotificationsPaused(name):false;
+  $('profilePauseHint').textContent=name?'Takes effect immediately. No need to Save settings or Save satellite.':'Applies when you save this new satellite. No need to Save settings.';
   profileSource=name?state.settings.satellite_profiles[name].source||'':'';
   fillProfile(name?state.settings.satellite_profiles[name]:{});$('profileName').focus();
 }
@@ -557,7 +576,7 @@ $('settingsForm').addEventListener('submit',async event=>{
     const field=form.elements.namedItem(key);if(!field)continue;
     data[key]=field.type==='checkbox'?field.checked:field.type==='number'||['rotator_baud','radio_baud','rotator_max_azimuth'].includes(key)?Number(field.value):field.value;
   }
-  const recalculate=Object.keys(data).some(key=>!['earth_overlay','windows_maximum_volume','windows_volume_percent','auto_acknowledge_enabled','auto_acknowledge_seconds','automatic_pause_enabled','automatic_pause_start','automatic_pause_hours','rotator_enabled','rotator_port','rotator_baud','rotator_max_azimuth','radio_enabled','radio_port','radio_baud','radio_address','radio_step_hz','tracking_minimum_mode'].includes(key) && JSON.stringify(data[key])!==JSON.stringify(state.settings[key]));
+  const recalculate=Object.keys(data).some(key=>!['earth_overlay','windows_maximum_volume','windows_volume_percent','auto_acknowledge_enabled','auto_acknowledge_seconds','repeat_sound_seconds','automatic_pause_enabled','automatic_pause_start','automatic_pause_hours','rotator_enabled','rotator_port','rotator_baud','rotator_max_azimuth','radio_enabled','radio_port','radio_baud','radio_address','radio_step_hz','tracking_minimum_mode'].includes(key) && JSON.stringify(data[key])!==JSON.stringify(state.settings[key]));
   try{await post('/api/settings',data);if(recalculate){selectedPass=null;selectedName=null;}await refreshState();$('saveStatus').textContent=recalculate?'Saved. Recalculating your passes…':'Settings saved.';toast('Settings saved.');}catch(error){$('saveStatus').textContent=error.message;toast(error.message);}
 });
 $('enableNotifications').addEventListener('click',async()=>{

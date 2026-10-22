@@ -1,7 +1,7 @@
 {
   "latitude": 51.825,
   "longitude": -0.375,
-  "observer_height_m": 0.0,
+  "observer_height_m": 100.0,
   "minimum_elevation": 35.0,
   "satellites": [
     "RS-44",
@@ -28,10 +28,10 @@
   "earth_overlay": true,
   "sound_enabled": true,
   "windows_maximum_volume": true,
-  "windows_volume_percent": 100.0,
+  "windows_volume_percent": 75.0,
   "auto_acknowledge_enabled": true,
-  "auto_acknowledge_seconds": 60.0,
-  "repeat_sound_seconds": 30.0,
+  "auto_acknowledge_seconds": 300.0,
+  "repeat_sound_seconds": 60.0,
   "windows_popup": true,
   "automatic_pause_enabled": true,
   "automatic_pause_start": "00:00",

@@ -481,3 +481,27 @@ receive-only operation, an in-flight manual change, target handover, continued
 rotator pointing, stale observations, explicit stop and serial failure. The
 checks use simulated serial devices and do not establish physical IC-9700
 performance. The radio connection test retains its existing two-second timing.
+
+## Defaults, immediate satellite pause and Settings navigation — 22 October 2026
+
+New settings use 100 m station height, 300-second automatic acknowledgement,
+60-second repeat chimes, 75% Windows alarm volume and whole-pass horizon
+tracking. Existing saved preferences remain available. The How it works heading
+uses the saved minimum elevation, and Configure equipment scrolls and focuses
+the equipment Settings panel. The expanded Earth map keeps the station cross
+and puts its label in a separate side key.
+
+An individual satellite pause applies immediately without Save settings. It
+cancels outstanding alerts for that satellite and removes it from the main pass
+and equipment target. Commands already in progress are cancelled, the rotator
+stops or follows the next eligible satellite, and unpausing can resume a current
+qualifying pass through the remaining visible portion. The global live-control
+switch is preserved. The forecast retains qualifying passes until horizon set
+so an explicit mid-pass resume can still find them; ordinary alert timing and
+deduplication continue to use the normal useful alert window.
+
+**213 Python tests and 56 offline DOM checks passed.** Checks include fresh
+defaults, immediate cancellation and resumption with live control on and off,
+interruption of an in-flight frequency update, current-pass selection, remaining
+time below the minimum, the equipment destination and the station key. Serial
+checks use simulated devices and do not establish physical radio/rotator behavior.

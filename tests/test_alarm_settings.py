@@ -19,7 +19,8 @@ class AlarmSettingsTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.now = datetime(2026, 10, 7, 12, tzinfo=timezone.utc)
         atomic_json(self.root / 'settings.json', {**DEFAULT_SETTINGS, 'satellites': ['ISS'],
-                    'sound_enabled': False, 'windows_popup': False, 'automatic_pause_enabled': False})
+                    'sound_enabled': False, 'windows_popup': False, 'automatic_pause_enabled': False,
+                    'auto_acknowledge_seconds': 60, 'windows_volume_percent': 100, 'repeat_sound_seconds': 30})
         self.monitor = self.load()
 
     def load(self):
@@ -32,13 +33,31 @@ class AlarmSettingsTests(unittest.TestCase):
     def test_new_defaults_and_existing_enabled_choices_are_preserved(self):
         defaults = validate_settings({})
         self.assertTrue(defaults['auto_acknowledge_enabled'])
-        self.assertEqual(defaults['auto_acknowledge_seconds'], 60)
-        self.assertEqual(defaults['windows_volume_percent'], 100)
+        self.assertEqual(defaults['auto_acknowledge_seconds'], 300)
+        self.assertEqual(defaults['windows_volume_percent'], 75)
+        self.assertEqual(defaults['repeat_sound_seconds'], 60)
+        self.assertEqual(defaults['observer_height_m'], 100)
+        self.assertEqual(defaults['tracking_minimum_mode'], 'horizon')
         self.assertFalse(defaults['rotator_enabled'] or defaults['radio_enabled'])
         existing = settings_for_startup({'rotator_enabled': True, 'radio_enabled': True,
                                         'windows_maximum_volume': False}, [])
         self.assertTrue(existing['rotator_enabled'] and existing['radio_enabled'])
         self.assertFalse(existing['windows_maximum_volume'])
+
+    def test_five_minute_default_alarm_uses_75_percent_and_repeat_changes_do_not_rebuild_passes(self):
+        defaults = validate_settings({})
+        self.monitor.save_settings({key: defaults[key] for key in ('auto_acknowledge_seconds', 'windows_volume_percent', 'repeat_sound_seconds')})
+        generation = self.monitor.generation
+        self.monitor.settings['sound_enabled'] = True
+        with patch.object(self.monitor.sound, 'play') as play:
+            alert = self.monitor.test_alert()
+            play.assert_called_once_with(volume_percent=75, alert_ids=[alert['id']])
+        self.assertEqual(alert['auto_acknowledge_at'], iso(self.now + timedelta(seconds=300)))
+        self.assertEqual(self.monitor.generation, generation)
+        self.now += timedelta(seconds=299)
+        self.assertFalse(self.monitor.snapshot()['alerts'][0]['acknowledged'])
+        self.now += timedelta(seconds=1)
+        self.assertTrue(self.monitor.snapshot()['alerts'][0]['acknowledged'])
 
     def test_exact_one_minute_boundary_and_history_remains_after_auto_acknowledgement(self):
         alert = self.monitor.test_alert()

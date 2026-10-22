@@ -93,7 +93,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertTrue(value["settings"]["satellite_notifications_paused"]["ISS"])
         self.assertTrue(value["satellites"][0]["notifications_paused"])
         self.assertFalse(value["alerts"][0]["active"])
-        self.assertFalse(value["alerts"][0]["acknowledged"])
+        self.assertTrue(value["alerts"][0]["acknowledged"])
+        self.assertEqual(value["alerts"][0]["acknowledgement_source"], "satellite_pause")
         self.assertEqual(self.request("POST", "/api/settings", {"satellite_notifications_paused": {"ISS": "true"}})[0], 400)
 
     def test_dashboard_assets_and_live_state(self):

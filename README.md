@@ -33,7 +33,7 @@ The default ground station and satellite list are:
 - Alert **5 minutes before horizon rise**, only for passes reaching that angle.
 - Automatic pause **00:00 for 7 hours**, every day.
 - RS-44, AO-73, SO-50, ISS, FO-29, JO-97 and AO-123.
-- Observer height defaults to **0 metres above sea level**; set your station's
+- Observer height defaults to **100 metres above sea level**; set your station's
   actual height in Settings. Existing saved preferences are retained.
 
 ## Start the server and open the application
@@ -222,8 +222,8 @@ in `static/earth-overlay.prompt.txt`.
 A real alert gives you:
 
 - A large pulsing amber banner, with a reduced-motion alternative.
-- A Windows chime, repeated every 30 seconds until acknowledged or the useful
-  window ends. Automatic acknowledgement defaults to **60 seconds (1 minute)**.
+- A Windows chime, repeated every 60 seconds until acknowledged or the useful
+  window ends. Automatic acknowledgement defaults to **300 seconds (5 minutes)**.
   You can change/disable the sound or choose manual acknowledgement in Settings.
 - A Windows popup, enabled by default, that can appear over other applications.
   Press OK to close the message, then acknowledge the alert in the app. You can
@@ -266,8 +266,7 @@ its chime and notifications stop when its useful window ends.
 
 **Set Windows volume and unmute before each alarm chime** is enabled by default
 in Settings. Choose **Windows alarm volume (%)** from **1 to 100**. The initial
-value is **100%**, preserving the previous full-volume setting; choose any lower
-level you prefer. Immediately before native playback, the app sets the default
+value is **75%**; choose the level you prefer. Immediately before native playback, the app sets the default
 multimedia playback device to that level, unmutes it and checks the readback using
 [Windows Core Audio](https://learn.microsoft.com/en-us/windows/win32/api/endpointvolume/nf-endpointvolume-iaudioendpointvolume-setmastervolumelevelscalar).
 This applies to real alerts, repeat chimes and Test alert. Before the first alarm
@@ -334,21 +333,41 @@ Each satellite's watch-list card shows its current elevation and azimuth, plus
 **Next pass max**: the predicted maximum elevation of that next qualifying pass.
 A dash is shown when no qualifying pass is available in the forecast.
 
-Pause controls apply immediately when saved, without recalculating or
+The global pause controls apply immediately when saved, without recalculating or
 acknowledging an existing pass alert.
 
 In **Settings → Satellites & frequencies**, each satellite has a **Pause
-notifications for this satellite until you uncheck this** checkbox. Checking it saves immediately and
-silences that satellite's chimes, Windows popups, browser notifications and
-dashboard alert banner until you uncheck it, including after restarting the app.
-Other satellites continue to alert. Existing alerts remain in history for
-acknowledgement. Positions and predictions continue updating, and notification
-pauses leave live radio/rotator tracking running. New satellites start with this
-box **unchecked**. You can also set it in the satellite editor.
+notifications for this satellite until you uncheck this** checkbox. It takes
+effect **immediately**: there is **no need to press Save settings**. For saved
+satellites, the checkbox in the satellite editor also applies immediately without
+saving any other frequency edits. A new satellite's initial choice applies when
+you save the new satellite; new entries default to **unchecked**.
+
+Pausing cancels that satellite's outstanding alerts, closes its notification
+banner/popups and excludes it from the main pass selection and live equipment
+target. Cancelled alerts remain in history as **Cancelled · satellite paused**.
+The main display advances to the next eligible pass. Running equipment follows
+the highest eligible satellite; with no eligible target, the rotator stops and
+radio frequency updates wait. Other satellites' alerts continue normally, and
+all positions and predictions keep updating.
+
+Unpausing during a qualifying visible pass activates it immediately, including
+the remaining visible portion below the minimum angle. It creates a fresh alert
+for that resumed pass and permits running radio/rotator controls to follow it.
+The main **Start/Stop live tracking** switch is respected: unpausing does not
+switch on hardware control that you stopped. The global daily/manual alert pause
+still suppresses notifications until resumed. These satellite choices persist
+after restarting the app.
 
 ![Automatic pause enabled from midnight for seven hours](docs/automatic-pause.jpg)
 
 ## Enlarged Earth and sky views
+
+The expanded Earth view keeps the purple ground-station cross on the globe and
+shows **Your ground station** in a key beside it, keeping the map clear. The key
+is hidden in local sky mode. **Configure equipment** on the main page opens
+Settings at the rotator/radio configuration, and the How it works elevation
+heading uses your saved minimum angle.
 
 Click the Earth in **Your sky**, or **Expand live view**, to open the larger view.
 The default **Earth** mode is an orthographic globe centred on your saved station.
@@ -429,9 +448,11 @@ connections. You can enable the radio, rotator, or both in Settings.
 
 Tracking covers the **whole pass above the horizon**, including below your 35°
 alert angle. With overlapping passes, the satellite with the **highest current
-elevation** controls both devices; its predicted peak is not used to choose it.
+elevation** among satellites with notifications enabled controls both devices;
+its predicted peak is not used to choose it.
 Settings also offers tracking only above your minimum angle. Pausing alerts
-affects notifications; use the separate live-tracking button to stop equipment.
+affects notifications; an individual satellite pause also excludes that satellite
+from tracking. Use the separate live-tracking button to stop all equipment.
 Changing equipment, location, tracking criteria or satellite profiles stops live
 control so you can restart after reviewing the changes.
 
@@ -720,7 +741,7 @@ on that computer before relying on it.
 
 See [VALIDATION.md](VALIDATION.md) for the full verification record and limits.
 The GitHub Actions workflow runs the offline suite on Windows with Python 3.12
-and 3.14 for pushes and pull requests. It also runs **30 offline dashboard DOM
+and 3.14 for pushes and pull requests. It also runs **56 offline dashboard DOM
 checks** using Node.js and jsdom. Maintainers can run these with `npm ci` followed
 by `npm test` (Node.js 18 or later). Node.js is not required to run the program;
 the map scripts are already bundled. These DOM checks do not replace visual

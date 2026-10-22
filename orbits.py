@@ -25,7 +25,7 @@ CATALOGUE = {
 DEFAULT_SETTINGS = {
     "latitude": 51.825,
     "longitude": -0.375,
-    "observer_height_m": 0.0,
+    "observer_height_m": 100.0,
     "minimum_elevation": 35.0,
     "satellites": ["RS-44", "AO-73", "SO-50", "ISS", "FO-29", "JO-97", "AO-123"],
     "satellite_notifications_paused": {},
@@ -37,10 +37,10 @@ DEFAULT_SETTINGS = {
     "sound_enabled": True,
     # Keep the existing enable-flag name; the actual level is configurable below.
     "windows_maximum_volume": True,
-    "windows_volume_percent": 100.0,
+    "windows_volume_percent": 75.0,
     "auto_acknowledge_enabled": True,
-    "auto_acknowledge_seconds": 60.0,
-    "repeat_sound_seconds": 30,
+    "auto_acknowledge_seconds": 300.0,
+    "repeat_sound_seconds": 60,
     "windows_popup": True,
     "automatic_pause_enabled": True,
     "automatic_pause_start": "00:00",
@@ -295,8 +295,6 @@ class OrbitCalculator:
         horizons = self._segments(satellite, observer, start, end, 0) if threshold > 0 else windows
         result = []
         for rise, setting, peaks in windows:
-            if setting <= now:
-                continue
             peak_candidates = peaks or [rise + (setting - rise) / 2]
             peak_time = max(peak_candidates, key=lambda moment: self.position(satellite, observer, moment)["elevation"])
             peak = self.position(satellite, observer, peak_time)["elevation"]
@@ -304,6 +302,8 @@ class OrbitCalculator:
                 continue
             horizon = next((p for p in horizons if p[0] <= peak_time <= p[1]), (rise, setting, []))
             hrise, hset = horizon[:2]
+            if hset <= now:
+                continue
             sample_dates = [hrise + (hset - hrise) * fraction for fraction in np.linspace(0, 1, 65)]
             sample_times = self.ts.from_datetimes(sample_dates)
             alt, az, _ = (satellite - observer).at(sample_times).altaz()

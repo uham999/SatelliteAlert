@@ -24,6 +24,7 @@ def available_ports():
 def select_target(rows, settings):
     minimum = settings["minimum_elevation"] if settings["tracking_minimum_mode"] == "threshold" else 0
     candidates = [row for row in rows if row.get("status") == "tracking"
+                  and not settings.get("satellite_notifications_paused", {}).get(row.get("name"), False)
                   and all(isinstance(row.get(key), (int, float)) and math.isfinite(row[key]) for key in ("azimuth", "elevation", "range_rate_km_s"))
                   and row["elevation"] >= minimum]
     return deepcopy(max(candidates, key=lambda row: row["elevation"])) if candidates else None
@@ -114,6 +115,8 @@ class HardwareController:
     def offer(self, target, settings):
         # One latest observation, never a queue of stale pointing commands.
         with self.lock:
+            if self.enabled and self.target and settings.get("satellite_notifications_paused", {}).get(self.target["name"], False):
+                self.generation += 1  # Cancel commands already in flight for the paused satellite.
             self.target, self.settings, self.offered_at = deepcopy(target), deepcopy(settings), self.monotonic()
             self.state["target"] = target["name"] if target else None
         self.wake.set()

@@ -25,7 +25,8 @@ class VolumeRestoreTests(unittest.TestCase):
         self.sound_patch = patch.dict('sys.modules', winsound=self.win)
         self.sound_patch.start()
         atomic_json(self.root / 'settings.json', {**DEFAULT_SETTINGS, 'satellites': ['ISS'],
-                    'windows_popup': False, 'automatic_pause_enabled': False})
+                    'windows_popup': False, 'automatic_pause_enabled': False,
+                    'auto_acknowledge_seconds': 60, 'windows_volume_percent': 100})
         self.monitor = self.load()
 
     def load(self):

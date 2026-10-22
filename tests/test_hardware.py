@@ -456,7 +456,7 @@ class MonitorEquipmentTests(unittest.TestCase):
                 self.assertEqual(saved["rotator_port"], "COM3")
                 self.assertEqual(saved["rotator_baud"], 9600)
                 self.assertEqual(saved["radio_baud"], 57600 if initial is None else 9600)
-                self.assertEqual(saved["observer_height_m"], 0 if initial is None else 100)
+                self.assertEqual(saved["observer_height_m"], 100)
                 self.assertFalse(monitor.hardware.snapshot()["enabled"])
                 monitor.close()
                 with patch("satellite_alert.available_ports", return_value=[]):

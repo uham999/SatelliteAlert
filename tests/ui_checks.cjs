@@ -15,7 +15,7 @@ async function dashboard(t, changes={}) {
   // their existing acknowledgement behavior. Fresh defaults are checked below.
   Object.assign(settings,{rotator_enabled:true,radio_enabled:true,auto_acknowledge_enabled:false});
   settings.satellite_notifications_paused=Object.fromEntries(settings.satellites.map(name=>[name,false]));
-  const now=new Date().toISOString(),errors=[],requests=[],paint=[];let testSerial=0;
+  const now=new Date().toISOString(),errors=[],requests=[],paint=[],scrolled=[];let testSerial=0;
   const elevations={'RS-44':12,'ISS':62,'FO-29':23,'AO-73':-5,'JO-97':-12,'SO-50':-20,'AO-123':-40};
   let server={token:'offline-test-token',settings,now,last_tick:now,forecast_at:now,
     fetched_at:now,next_refresh_at:now,fetch_error:null,forecast_error:null,warnings:[],
@@ -28,13 +28,14 @@ async function dashboard(t, changes={}) {
       doppler:{rx_hz:437801000,tx_hz:145989000,rx_shift_hz:1000,tx_shift_hz:-1000}})),
     hardware:{enabled:false,radio_test_enabled:false,radio_test_frequency_hz:null,radio_test_result:null,rotator_test:null,error:null,rotator_status:'Off',radio_status:'Off',rotator_position:null,
       commanded_position:null,radio_rx_hz:null,radio_tx_hz:null},...changes};
-  const updateTarget=()=>{server.tracking_target=clone(server.satellites.filter(row=>row.status==='tracking' && row.elevation>=0).sort((a,b)=>b.elevation-a.elevation)[0] || null);};
+  const updateTarget=()=>{server.tracking_target=clone(server.satellites.filter(row=>row.status==='tracking' && row.elevation>=0 && !server.settings.satellite_notifications_paused?.[row.name]).sort((a,b)=>b.elevation-a.elevation)[0] || null);};
   updateTarget();
   const vc=new VirtualConsole();vc.on('jsdomError',error=>errors.push(error.message));
   const dom=new JSDOM(fs.readFileSync(path.join(root,'static/index.html'),'utf8'),
     {url:'http://127.0.0.1:8765/',runScripts:'outside-only',virtualConsole:vc});
   t.after(async()=>{await flush();dom.window.close();assert.deepEqual(errors,[]);});
   const w=dom.window,$=id=>w.document.getElementById(id);
+  w.HTMLElement.prototype.scrollIntoView=function(options){scrolled.push({id:this.id,options});};
   w.setTimeout=()=>0;w.clearTimeout=()=>{};w.setInterval=()=>0;
   w.AbortSignal.timeout=()=>new w.AbortController().signal;
   w.requestAnimationFrame=fn=>{fn();return 0;};
@@ -55,10 +56,18 @@ async function dashboard(t, changes={}) {
     else if(url==='/world-land.json')result=JSON.parse(fs.readFileSync(path.join(root,'static/world-land.json'),'utf8'));
     else if(url==='/api/ports')result={ports,default_profiles:settings.satellite_profiles};
     else if(url==='/api/settings'){
+      const changedNotifications=Object.keys(body.satellite_notifications_paused || {}).filter(name=>Boolean(body.satellite_notifications_paused[name])!==Boolean(server.settings.satellite_notifications_paused[name]));
       const pauses={...server.settings.satellite_notifications_paused,...body.satellite_notifications_paused};
       const equipmentKeys=['satellites','satellite_profiles','latitude','longitude','observer_height_m','minimum_elevation','rotator_enabled','rotator_port','rotator_baud','rotator_max_azimuth','radio_enabled','radio_port','radio_baud','radio_address','radio_step_hz','tracking_minimum_mode'];
       const equipmentChanged=Object.keys(body).some(key=>equipmentKeys.includes(key) && JSON.stringify(body[key])!==JSON.stringify(server.settings[key]));
       server.settings={...server.settings,...body};server.settings.satellite_notifications_paused=Object.fromEntries(server.settings.satellites.map(name=>[name,Boolean(pauses[name])]));
+      for(const name of changedNotifications){
+        if(pauses[name]){
+          for(const alert of server.alerts)if(alert.name===name && !alert.test && !alert.acknowledged)Object.assign(alert,{acknowledged:true,active:false,acknowledgement_source:'satellite_pause'});
+        }else if(!server.paused && server.passes.some(pass=>pass.name===name && new Date(pass.horizon_rise)<=new Date(server.now) && new Date(server.now)<new Date(pass.horizon_set))){
+          server.alerts.unshift({id:`resumed-${++testSerial}`,name,test:false,active:true,acknowledged:false,created_at:server.now,message:`${name} notifications resumed during the current pass.`});
+        }
+      }
       if(equipmentChanged){
         server.hardware.enabled=false;server.hardware.radio_test_enabled=false;
         if(!server.settings.rotator_enabled)Object.assign(server.hardware,{rotator_test:null,rotator_position:null,commanded_position:null});
@@ -105,7 +114,7 @@ async function dashboard(t, changes={}) {
   for(const name of ['d3-array.min.js','d3-geo.min.js'])w.eval(fs.readFileSync(path.join(root,'static',name),'utf8'));
   w.eval(fs.readFileSync(path.join(root,'static/app.js'),'utf8')+'\nwindow.__test={refreshState,fillSettings};');await flush();
   assert.deepEqual(errors,[]);assert.doesNotMatch($('connection').textContent,/disconnected/);
-  return {w,$,paint,requests,errors,server,updateTarget,refresh:async()=>{updateTarget();await w.__test.refreshState();await flush();}};
+  return {w,$,paint,scrolled,requests,errors,server,updateTarget,refresh:async()=>{updateTarget();await w.__test.refreshState();await flush();}};
 }
 
 test('initial dashboard renders equipment preview and seven editable profiles with hardware off',async t=>{
@@ -254,6 +263,80 @@ test('per-satellite checkbox saves immediately without stopping equipment or rem
   assert.deepEqual(requests.find(row=>row.url==='/api/settings').body,{satellite_notifications_paused:{ISS:true}});
   const resume=$('profileList').querySelector('[data-pause-satellite="ISS"]');resume.checked=false;resume.dispatchEvent(new w.Event('change'));await flush();
   assert.equal(server.settings.satellite_notifications_paused.ISS,false);assert.equal(server.hardware.enabled,true);
+});
+
+function forecastPass(name,norad,offsetMinutes=0){
+  const at=minutes=>new Date(Date.now()+(minutes+offsetMinutes)*60000).toISOString();
+  return {name,norad,alert_at:at(-8),horizon_rise:at(-3),threshold_rise:at(-1),peak_time:at(2),
+    threshold_set:at(5),horizon_set:at(7),peak_elevation:75,path:[]};
+}
+
+test('pausing a selected current pass advances the main display and unpausing restores it immediately with live control on or off',async t=>{
+  for(const enabled of [false,true]){
+    const {$,w,server,refresh,requests}=await dashboard(t);
+    const iss=server.satellites.find(row=>row.name==='ISS'),fo29=server.satellites.find(row=>row.name==='FO-29');
+    server.passes=[forecastPass('ISS',iss.norad),forecastPass('FO-29',fo29.norad,90)];
+    server.hardware.enabled=enabled;
+    server.alerts=[{id:'current-pass',name:'ISS',test:false,active:true,acknowledged:false,created_at:server.now,message:'Current ISS pass'}];
+    await refresh();$('fleet').querySelector('[data-satellite="ISS"]').click();
+    assert.equal($('nextName').textContent,'ISS');
+    const pause=$('profileList').querySelector('[data-pause-satellite="ISS"]');pause.checked=true;pause.dispatchEvent(new w.Event('change'));await flush();
+    assert.equal($('nextName').textContent,'FO-29');assert.equal(server.tracking_target.name,'FO-29');
+    assert.ok($('alertBanner').classList.contains('hidden'));assert.match($('history').textContent,/CANCELLED · SATELLITE PAUSED/);
+    assert.match($('toast').textContent,/paused immediately.*No need to Save settings/);
+    const resume=$('profileList').querySelector('[data-pause-satellite="ISS"]');resume.checked=false;resume.dispatchEvent(new w.Event('change'));await flush();
+    assert.equal($('nextName').textContent,'ISS');assert.equal(server.tracking_target.name,'ISS');
+    assert.ok(!$('alertBanner').classList.contains('hidden'));assert.equal(server.hardware.enabled,enabled);
+    assert.match($('toast').textContent,/resumed immediately/);
+    assert.equal(requests.filter(row=>row.url==='/api/tracking').length,0);
+  }
+});
+
+test('saved satellite editor pause takes effect without saving other frequency edits',async t=>{
+  const {$,w,server,requests}=await dashboard(t);
+  $('profileList').querySelector('[data-edit="ISS"]').click();
+  const original=server.settings.satellite_profiles.ISS.downlink_mhz;
+  $('profileRx').value='437.123';
+  assert.match($('profilePauseHint').textContent,/immediately.*No need to Save settings or Save satellite/);
+  $('profilePause').checked=true;$('profilePause').dispatchEvent(new w.Event('change'));await flush();
+  assert.equal(server.settings.satellite_notifications_paused.ISS,true);
+  assert.equal(server.settings.satellite_profiles.ISS.downlink_mhz,original);assert.equal($('profileRx').value,'437.123');
+  assert.deepEqual(requests.filter(row=>row.url==='/api/settings').at(-1).body,{satellite_notifications_paused:{ISS:true}});
+  $('cancelSatellite').click();$('addSatellite').click();
+  assert.match($('profilePauseHint').textContent,/save this new satellite/);assert.equal($('profilePause').checked,false);
+});
+
+test('a resumed qualifying pass below the minimum shows remaining visible time until horizon set',async t=>{
+  const {$,server,refresh}=await dashboard(t);
+  const row=server.satellites.find(satellite=>satellite.name==='ISS');
+  const pass=forecastPass('ISS',row.norad);
+  pass.threshold_set=new Date(Date.now()-30000).toISOString();
+  server.passes=[pass];row.elevation=15;await refresh();
+  assert.equal($('nextName').textContent,'ISS');
+  assert.equal($('countdownLabel').textContent,'TIME UNTIL HORIZON SET');
+  assert.equal($('nextStatus').textContent,'PASS SETTING');
+  assert.notEqual($('countdown').textContent,'00 : 00 : 00');
+});
+
+test('Configure equipment opens and focuses the correct settings panel and help follows the saved angle',async t=>{
+  const {$,w,server,refresh,scrolled}=await dashboard(t);
+  w.document.querySelector('[data-settings-target="equipmentSettings"]').click();
+  assert.ok(!$('view-settings').classList.contains('hidden'));assert.equal(scrolled.at(-1).id,'equipmentSettings');
+  assert.equal(scrolled.at(-1).options.block,'start');assert.equal(w.document.activeElement.id,'equipmentSettings');
+  server.settings.minimum_elevation=52.5;await refresh();
+  w.document.querySelector('[data-view="help"]').click();
+  assert.match($('helpElevationHeading').textContent,/52\.5°.*Settings/);
+  assert.match($('view-help').textContent,/minimum elevation.*editable/);
+});
+
+test('expanded Earth keeps the station cross on the globe and puts its label in a side key',async t=>{
+  const {$,w,paint}=await dashboard(t);$('expandSky').click();await flush();
+  assert.ok(!$('groundStationKey').classList.contains('hidden'));assert.equal($('groundStationKey').textContent,'Your ground station');
+  assert.ok($('groundStationKey').closest('.expanded-side'));assert.ok($('groundStationKey').querySelector('svg path'));
+  assert.ok(!paint.some(item=>item.canvas==='expandedSky' && item.op==='fillText' && item.args[0]==='Your ground station'));
+  assert.ok(paint.some(item=>item.canvas==='expandedSky' && item.op==='stroke' && item.args.length===0));
+  $('expandedMapMode').value='sky';$('expandedMapMode').dispatchEvent(new w.Event('change'));
+  assert.ok($('groundStationKey').classList.contains('hidden'));
 });
 
 test('new satellites default to notifications on and editing or renaming keeps their selected pause',async t=>{
@@ -633,11 +716,13 @@ test('maximum Windows volume is enabled by default and can be disabled without a
   assert.equal($('saveStatus').textContent,'Settings saved.');
 });
 
-test('fresh defaults select one-minute automatic acknowledgement and notification-only equipment',async t=>{
+test('fresh defaults select five-minute alarms, 60-second repeats, 75 percent volume, 100m height and whole-pass tracking',async t=>{
   const defaults=JSON.parse(fs.readFileSync(path.join(root,'settings.example.json'),'utf8'));
   const {$}=await dashboard(t,{settings:defaults}),fields=$('settingsForm').elements;
-  assert.equal(fields.auto_acknowledge_enabled.checked,true);assert.equal(fields.auto_acknowledge_seconds.value,'60');
-  assert.equal(fields.windows_volume_percent.value,'100');assert.equal(fields.windows_maximum_volume.checked,true);
+  assert.equal(fields.auto_acknowledge_enabled.checked,true);assert.equal(fields.auto_acknowledge_seconds.value,'300');
+  assert.equal(fields.windows_volume_percent.value,'75');assert.equal(fields.windows_maximum_volume.checked,true);
+  assert.equal(fields.repeat_sound_seconds.value,'60');assert.equal(fields.observer_height_m.value,'100');
+  assert.equal(fields.tracking_minimum_mode.value,'horizon');
   assert.equal(fields.rotator_enabled.checked,false);assert.equal(fields.radio_enabled.checked,false);
   assert.equal($('trackingToggle').disabled,true);assert.match($('trackingNotice').textContent,/Notification-only mode/);
   assert.ok($('radioTestToggle').classList.contains('hidden'));assert.ok($('rotatorTest').classList.contains('hidden'));
@@ -686,7 +771,7 @@ test('manual acknowledgement and current-volume options disable their numeric co
   assert.equal(fields.auto_acknowledge_seconds.disabled,true);assert.equal(fields.windows_volume_percent.disabled,true);
   $('settingsForm').dispatchEvent(new w.Event('submit',{cancelable:true}));await flush();
   assert.equal(server.settings.auto_acknowledge_enabled,false);assert.equal(server.settings.windows_maximum_volume,false);
-  assert.equal(server.settings.auto_acknowledge_seconds,60);assert.equal(server.settings.windows_volume_percent,100);
+  assert.equal(server.settings.auto_acknowledge_seconds,300);assert.equal(server.settings.windows_volume_percent,75);
 });
 
 test('automatic acknowledgement removes the alarm, closes browser notification and stays in history',async t=>{

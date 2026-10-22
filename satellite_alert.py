@@ -35,7 +35,7 @@ from windows_notifications import show_windows_popup
 ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger("satellite_alert")
 PAUSE_SETTINGS = {"automatic_pause_enabled", "automatic_pause_start", "automatic_pause_hours"}
-ALARM_SETTINGS = {"windows_maximum_volume", "windows_volume_percent", "auto_acknowledge_enabled", "auto_acknowledge_seconds"}
+ALARM_SETTINGS = {"windows_maximum_volume", "windows_volume_percent", "auto_acknowledge_enabled", "auto_acknowledge_seconds", "repeat_sound_seconds"}
 HARDWARE_SETTINGS = {"satellite_profiles", "rotator_enabled", "rotator_port", "rotator_baud", "rotator_max_azimuth",
                      "radio_enabled", "radio_port", "radio_baud", "radio_address", "radio_step_hz", "tracking_minimum_mode"}
 
@@ -287,6 +287,9 @@ class Monitor:
             if "latitude" in values or "longitude" in values:
                 combined["location_note"] = ""
             settings = validate_settings(combined)
+            notification_changes = {name for name in settings["satellites"]
+                                    if settings["satellite_notifications_paused"][name] != self.notifications_paused(name)}
+            resumed_names = {name for name in notification_changes if not settings["satellite_notifications_paused"][name]}
             recalculate = any(settings[key] != self.settings[key] for key in settings if key not in PAUSE_SETTINGS | HARDWARE_SETTINGS | ALARM_SETTINGS | {"earth_overlay", "satellite_notifications_paused"})
             hardware_changed = any(settings[key] != self.settings[key] for key in HARDWARE_SETTINGS | {"latitude", "longitude", "observer_height_m", "minimum_elevation", "satellites"})
             pause_changed = any(settings[key] != self.settings[key] for key in PAUSE_SETTINGS)
@@ -294,6 +297,14 @@ class Monitor:
                 self.hardware.set_enabled(False, settings)
             atomic_json(self.root / "settings.json", settings)
             self.settings = settings
+            now = self.clock()
+            if notification_changes:
+                for alert in self.alerts:
+                    if not alert["test"] and not alert["acknowledged"] and alert["name"] in notification_changes and self.notifications_paused(alert["name"]):
+                        alert.update(acknowledged=True, acknowledged_at=iso(now), acknowledgement_source="satellite_pause")
+                resumed_passes = [pass_ for pass_ in self.passes if pass_.name in resumed_names and pass_.horizon_rise <= now < pass_.horizon_set]
+                self.ledger = [entry for entry in self.ledger if not any(already_alerted(pass_, [entry]) for pass_ in resumed_passes)]
+                self._persist_alerts()
             if pause_changed:
                 self.resume_override_window = None
                 self._persist_pause()
@@ -310,6 +321,8 @@ class Monitor:
             self._update_tracking()
         if recalculate:
             self.wake.set()
+        if notification_changes:
+            self.tick(resumed_names=resumed_names)
 
     def lookup_profile(self, name):
         if not isinstance(name, str):
@@ -506,7 +519,7 @@ class Monitor:
             self.wake.wait(2)
             self.wake.clear()
 
-    def tick(self):
+    def tick(self, resumed_names=()):
         with self.lock:
             now = self.clock()
             self.last_tick = now
@@ -531,15 +544,19 @@ class Monitor:
             self._update_tracking()
             if not self.paused:
                 for pass_ in self.passes:
-                    if self.notifications_paused(pass_.name) or pass_.name not in ready or not alert_due(pass_, self.settings["alert_mode"], now) or already_alerted(pass_, self.ledger):
+                    resuming_current = pass_.name in resumed_names and pass_.horizon_rise <= now < pass_.horizon_set
+                    if self.notifications_paused(pass_.name) or pass_.name not in ready or not (alert_due(pass_, self.settings["alert_mode"], now) or resuming_current) or already_alerted(pass_, self.ledger):
                         continue
                     elevation = rows[pass_.name].get("elevation", -90)
                     # Guard an outdated forecast after a manoeuvre/new download.
-                    if self.settings["alert_mode"] == "threshold" and elevation < self.settings["minimum_elevation"]:
+                    if self.settings["alert_mode"] == "threshold" and elevation < self.settings["minimum_elevation"] and not resuming_current:
                         continue
-                    if self.settings["alert_mode"] == "horizon" and elevation < 0:
+                    if (self.settings["alert_mode"] == "horizon" or resuming_current) and elevation < 0:
                         continue
-                    alert = self._make_alert(pass_.name, False, now, pass_.threshold_set, elevation, pass_.peak_elevation, pass_.horizon_rise)
+                    end = pass_.horizon_set if resuming_current else pass_.threshold_set
+                    alert = self._make_alert(pass_.name, False, now, end, elevation, pass_.peak_elevation, pass_.horizon_rise)
+                    if resuming_current:
+                        alert["message"] = f"{pass_.name}: notifications resumed during the current pass; elevation {elevation:.1f}°, predicted peak {pass_.peak_elevation:.1f}°."
                     self.alerts.append(alert)
                     self.ledger.append(dict(norad=pass_.norad, horizon_rise=iso(pass_.horizon_rise)))
                     new_alerts.append(alert)
@@ -620,7 +637,7 @@ class Monitor:
             self._update_pause(now)
             self._auto_acknowledge(now)
             windows = [{**pass_.to_json(self.settings["alert_mode"]), "notifications_paused": self.notifications_paused(pass_.name)}
-                       for pass_ in self.passes if pass_.threshold_set > now]
+                       for pass_ in self.passes if pass_.horizon_set > now]
             pending = [pass_.to_json(self.settings["alert_mode"]) for pass_ in self.passes
                        if pass_.threshold_set > now and not already_alerted(pass_, self.ledger)]
             pending.sort(key=lambda pass_: pass_["alert_at"])
