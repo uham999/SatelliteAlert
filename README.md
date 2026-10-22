@@ -410,7 +410,7 @@ connections. You can enable the radio, rotator, or both in Settings.
    from REMOTE; select the virtual COM port carrying CI-V data. Your existing
    REMOTE USB interface handles TTL conversion.
 4. On the radio, set **USB SEND off** and **AFC off**, and clear RIT/ΔTX offsets.
-   Avoid manual tuning while the PC adjusts the two frequencies independently.
+   Manual tuning temporarily pauses the PC's frequency updates, as described below.
    NOR/REV controls tracking when turning the radio's main dial; the manual does
    not list an off option for NOR/REV. The app enters satellite
    VFO mode for duplex profiles, sets **MAIN for downlink/RX** and **SUB for
@@ -442,11 +442,29 @@ continues updating both downlink and uplink for the selected satellite. The
 equipment panel displays the separate rotator error. It does not repeatedly
 reopen the failed port; **Stop live tracking**, then **Start live tracking** to
 retry it. With only the rotator enabled, that failure stops live control.
-Radio errors, command rejections and incorrect frequency readback stop live
-control and display an error. It stays off until you correct the issue and start
+Radio communication errors, command rejections and incorrect initial frequency
+readback stop live control and display an error. It stays off until you correct the issue and start
 it again. If the
 connection is lost, the app cannot guarantee delivery of the stop command; a
 failed stop is reported for action at the controller.
+
+During a pass, turning the radio's tuning dial pauses automated **RX and TX**
+frequency writes. The app detects a change from its last commanded frequency by
+reading back MAIN and SUB, and waits until both have remained unchanged for
+**5 seconds**. Every further frequency change restarts that timer. It then tunes
+both bands to the **latest Doppler-corrected frequencies** for the currently
+selected satellite, and continues normal tracking automatically. Rotator
+tracking, satellite positions and alerts continue during the pause. If the pass
+has ended or positions are stale, it waits for a fresh in-range target before
+tuning again. Stop live tracking to end automatic control altogether.
+
+A yellow **Manual radio tuning detected** label shows the current radio
+readbacks and remaining quiet time. This detection uses frequency polling and
+does not require CI-V Transceive to be enabled. It preserves MAIN/SUB selection
+while checking the frequencies. Frequency changes by AFC or another controller
+also trigger this pause, so keep AFC off when using this app for Doppler control.
+The underlying readback and band-selection commands are documented in the
+[Icom CI-V reference guide](https://www.icomfrance.com/uploads/files/produit/not-IC-9700_ENG_CI-V_1-en.pdf).
 
 The moving **Calculated downlink / RX** and **Calculated uplink / TX** values are
 orbital predictions. They continue updating while live control is off. The
@@ -583,8 +601,9 @@ The result is rounded to Hz. The dashboard displays both requested frequencies
 and shifts. The default tuning deadband is **10 Hz**, editable from 1–1000 Hz.
 CI-V commands are acknowledged and both frequencies read back before the status
 reports them as verified. This uses independent CI-V frequency updates. It does
-not derive a channel automatically from a manual radio
-tuning change: edit the base pair in Settings to choose a different channel.
+not change the saved base pair when you tune manually. After the 5-second pause,
+it returns to that pair with the latest Doppler correction. Edit the base pair
+in Settings to keep a different channel.
 
 CI-V frequency data has **five BCD bytes, least significant pair first**. For
 example, the correct frame for 145.500000 MHz at A2 is:
@@ -689,7 +708,8 @@ it and let the app create fresh defaults.
 
 Equipment will not connect: check the detected port, matching baud/address,
 driver installation and other programs using the port. If frequency readback
-fails, disable AFC, avoid manual tuning and check MAIN/SUB CI-V operation.
+fails, disable AFC and check MAIN/SUB CI-V operation. The yellow manual-tuning
+pause clears automatically after 5 seconds without further frequency changes.
 Out-of-band or same-band duplex
 profiles are rejected; correct the pair or leave TX empty for receive-only use.
 On Linux, your account also needs permission to access the selected serial device.

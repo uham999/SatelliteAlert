@@ -83,7 +83,9 @@ class Device:
                 self.buffer.extend(data)
                 # An unsolicited broadcast from the radio to all stations.
                 self.buffer.extend(bytes((0xFE, 0xFE, 0x00, address, 0x03)) + frequency_bcd(145_000_000) + b"\xfd")
-            if command == 0x03:
+            if command == 0x07 and payload == b"\xd2":
+                self.buffer.extend(bytes((0xFE, 0xFE, 0xE0, address, 0x07, 0xD2, int(self.selected == 'sub'), 0xFD)))
+            elif command == 0x03:
                 hz = self.frequencies[self.selected] + self.owner.readback_offset
                 self.buffer.extend(bytes((0xFE, 0xFE, 0xE0, address, 0x03)) + frequency_bcd(hz) + b"\xfd")
             else:

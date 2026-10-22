@@ -463,3 +463,21 @@ disable/re-enable, acknowledgement without changing satellite alerts or live
 tracking, radio-test success and failure, authenticated HTTP requests, stale
 acknowledgements, and disabling a rotator while its C2 response is pending.
 Serial checks use simulated devices; no physical serial port was opened.
+
+## Manual tuning and automatic Doppler resumption — 22 October 2026
+
+The user requested a **5-second** stable-frequency interval. Live tracking now
+checks MAIN/SUB frequency readbacks before Doppler writes, including when the
+calculated change is inside the normal command deadband. A manual or external
+change pauses RX/TX frequency writes without stopping the rotator. Each further
+change restarts the interval. After 5 stable seconds, both frequencies are set
+to the latest selected satellite's Doppler prediction. A yellow dashboard
+notice shows the current readbacks and countdown. CI-V Transceive broadcasts
+are not required; polling preserves the operator's MAIN/SUB selection.
+
+**208 Python tests and 51 offline DOM checks passed.** Regression cases cover
+RX or TX tuning, repeated changes and return to the original frequency,
+receive-only operation, an in-flight manual change, target handover, continued
+rotator pointing, stale observations, explicit stop and serial failure. The
+checks use simulated serial devices and do not establish physical IC-9700
+performance. The radio connection test retains its existing two-second timing.

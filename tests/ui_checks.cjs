@@ -198,6 +198,39 @@ test('reported rotator angles and verified radio frequencies are distinct from t
   assert.equal($('trackingToggle').textContent,'Stop live tracking');
 });
 
+test('manual radio tuning shows a five-second countdown and current readbacks while keeping live tracking on',async t=>{
+  const {$,server,refresh,requests}=await dashboard(t);
+  Object.assign(server.hardware,{enabled:true,radio_manual_override:true,radio_manual_resume_seconds:5,
+    radio_observed_rx_hz:437805000,radio_observed_tx_hz:145985000,radio_rx_hz:437801000,radio_tx_hz:145989000,
+    radio_status:'Manual tuning · Doppler updates paused until frequency is stable for 5 seconds'});
+  await refresh();
+  assert.ok(!$('radioManualNotice').classList.contains('hidden'));
+  assert.equal($('radioManualNotice').getAttribute('role'),'status');
+  assert.match($('radioManualNotice').textContent,/Waiting for 5 seconds.*437\.805000 MHz.*145\.985000 MHz.*Rotator tracking continues/);
+  assert.equal($('trackingToggle').textContent,'Stop live tracking');
+  assert.ok($('trackingNotice').classList.contains('hidden'));
+  server.hardware.radio_manual_resume_seconds=2;await refresh();
+  assert.match($('radioManualNotice').textContent,/Waiting for 2 seconds/);
+  server.hardware.radio_manual_resume_seconds=0;await refresh();
+  assert.match($('radioManualNotice').textContent,/Checking frequency stability/);
+  Object.assign(server.hardware,{radio_manual_override:false,radio_status:'Tracking · frequencies verified',radio_rx_hz:437802000,radio_tx_hz:145988000});
+  await refresh();
+  assert.ok($('radioManualNotice').classList.contains('hidden'));assert.equal($('radioManualNotice').textContent,'');
+  assert.match($('equipmentStatus').textContent,/437\.802000 MHz.*145\.988000 MHz/);
+  assert.equal(requests.filter(row=>row.url==='/api/tracking').length,0);
+});
+
+test('manual tuning notice disappears when radio control or live tracking is disabled',async t=>{
+  const {$,server,refresh}=await dashboard(t);
+  Object.assign(server.hardware,{enabled:true,radio_manual_override:true,radio_manual_resume_seconds:5,radio_observed_rx_hz:437805000});
+  server.settings.rotator_enabled=false;await refresh();
+  assert.match($('radioManualNotice').textContent,/Positions and alerts continue/);
+  assert.doesNotMatch($('radioManualNotice').textContent,/Rotator tracking continues/);
+  server.settings.radio_enabled=false;await refresh();assert.ok($('radioManualNotice').classList.contains('hidden'));
+  server.settings.radio_enabled=true;server.hardware.enabled=false;await refresh();
+  assert.ok($('radioManualNotice').classList.contains('hidden'));
+});
+
 test('satellite editor creates, reads, updates, renames and deletes a custom profile',async t=>{
   const { $,server }=await dashboard(t);
   $('addSatellite').click();$('profileName').value='12345';$('profileRx').value='437.9';$('profileTx').value='145.8';

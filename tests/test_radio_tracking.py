@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from itertools import permutations
 import unittest
 
-from hardware import HardwareController, civ_frame, decode_frequency
+from hardware import HardwareController, RADIO_MANUAL_SETTLE_SECONDS, civ_frame, decode_frequency
 from orbits import validate_settings
 from profiles import doppler, profile
 from test_hardware import Clock, Factory
@@ -130,6 +130,188 @@ class PassRadioTests(unittest.TestCase):
         self.assertFalse(self.controller.snapshot()['enabled'])
         self.assertIsNone(self.controller.snapshot()['radio_verified_at'])
         self.assertFalse(any(frame[4] == 0x05 for frame in self.factory.devices[0].writes))
+
+    @staticmethod
+    def tune_count(radio):
+        return sum(frame[4] == 0x05 for frame in radio.writes)
+
+    def start_pass(self):
+        row = self.offer()
+        self.controller.set_enabled(True, self.settings)
+        self.controller.step()
+        self.verify(row)
+        return self.controller.radio
+
+    def test_manual_tuning_pauses_both_frequencies_and_resumes_latest_doppler_after_five_stable_seconds(self):
+        self.assertEqual(RADIO_MANUAL_SETTLE_SECONDS, 5)
+        radio = self.start_pass()
+        count = self.tune_count(radio)
+        radio.frequencies['main'] += 3500
+        self.offer(rate=2)
+        self.controller.step()
+        started = self.controller.radio_manual_changed_at
+        state = self.controller.snapshot()
+        self.assertTrue(state['enabled'])
+        self.assertIsNone(state['error'])
+        self.assertTrue(state['radio_manual_override'])
+        self.assertEqual(state['radio_manual_resume_seconds'], 5)
+        self.assertEqual(state['radio_observed_rx_hz'], radio.frequencies['main'])
+        for elapsed in (1, 2, 3, 4, 4.7):
+            self.clock.now = started + elapsed
+            self.offer(rate=elapsed)
+            self.controller.step()
+            self.assertEqual(self.tune_count(radio), count)
+            self.assertTrue(self.controller.snapshot()['radio_manual_override'])
+        self.clock.now = started + 5
+        latest = self.offer(rate=3)
+        self.controller.step()
+        self.verify(latest)
+        self.assertEqual(self.tune_count(radio), count + 2)
+        self.assertFalse(self.controller.snapshot()['radio_manual_override'])
+        self.assertEqual(self.controller.snapshot()['radio_manual_resume_seconds'], 0)
+        self.assertIs(self.controller.radio, radio)
+
+    def test_each_change_to_either_band_restarts_timer_and_sub_selection_is_preserved(self):
+        radio = self.start_pass()
+        count = self.tune_count(radio)
+        radio.selected = 'sub'
+        radio.frequencies['sub'] -= 1000
+        self.offer();self.controller.step()
+        self.assertEqual(radio.selected, 'sub')
+        first = self.controller.radio_manual_changed_at
+        self.clock.now = first + 4
+        radio.frequencies['main'] += 100
+        self.offer();self.controller.step()
+        second = self.controller.radio_manual_changed_at
+        self.assertGreater(second, first)
+        self.clock.now = second + 4
+        # Returning to the original pair is still a change: it must not resume early.
+        radio.frequencies['main'], radio.frequencies['sub'] = self.controller.last_radio[1:]
+        self.offer();self.controller.step()
+        third = self.controller.radio_manual_changed_at
+        self.assertGreater(third, second)
+        self.assertEqual(self.tune_count(radio), count)
+        self.clock.now = third + 4
+        self.offer();self.controller.step()
+        self.assertTrue(self.controller.snapshot()['radio_manual_override'])
+        self.assertEqual(radio.selected, 'sub')
+        self.clock.now = third + 5
+        latest = self.offer(rate=2)
+        self.controller.step()
+        self.verify(latest)
+        self.assertEqual(radio.selected, 'main')
+
+    def test_manual_change_is_detected_even_when_doppler_is_inside_command_deadband(self):
+        radio = self.start_pass()
+        count = self.tune_count(radio)
+        radio.frequencies['main'] += 20
+        self.offer();self.controller.step()
+        self.assertTrue(self.controller.snapshot()['radio_manual_override'])
+        self.assertEqual(self.tune_count(radio), count)
+        self.clock.now = self.controller.radio_manual_changed_at + 5
+        row = self.offer();self.controller.step()
+        self.verify(row)
+        self.assertEqual(self.tune_count(radio), count + 2)
+
+    def test_receive_only_polling_does_not_write_an_uplink_or_steal_sub_selection_during_pause(self):
+        self.settings['satellite_profiles']['ISS']['uplink_mhz'] = None
+        radio = self.start_pass()
+        radio.selected = 'sub'
+        radio.frequencies['main'] += 500
+        self.offer();self.controller.step()
+        self.assertEqual(radio.selected, 'sub')
+        self.assertIsNone(self.controller.snapshot()['radio_observed_tx_hz'])
+        count = self.tune_count(radio)
+        self.clock.now = self.controller.radio_manual_changed_at + 5
+        row = self.offer(rate=1);self.controller.step()
+        self.verify(row)
+        self.assertEqual(self.tune_count(radio), count + 1)
+
+    def test_rotator_continues_pointing_while_radio_frequency_writes_are_paused(self):
+        self.settings.update(rotator_enabled=True, rotator_port='COM10')
+        self.controller.ports_provider = lambda: [{'device': 'COM10'}, {'device': 'COM11'}]
+        radio = self.start_pass()
+        rotator = self.controller.rotator
+        initial_directions = len([command for command in rotator.writes if command.startswith(b'W')])
+        count = self.tune_count(radio)
+        radio.frequencies['main'] += 1000
+        self.offer();self.controller.step()
+        started = self.controller.radio_manual_changed_at
+        for elapsed in (1, 2, 3):
+            self.clock.now = started + elapsed
+            row = self.offer(rate=elapsed)
+            row['azimuth'] += elapsed * 2
+            self.controller.offer(row, self.settings)
+            self.controller.step()
+        self.assertEqual(self.tune_count(radio), count)
+        self.assertGreater(len([command for command in rotator.writes if command.startswith(b'W')]), initial_directions)
+        self.assertFalse(rotator.closed or radio.closed)
+        self.assertTrue(self.controller.snapshot()['enabled'])
+
+    def test_target_handover_during_manual_pause_waits_then_tunes_the_latest_satellite(self):
+        radio = self.start_pass()
+        radio.frequencies['main'] += 1000
+        self.offer();self.controller.step()
+        started, count = self.controller.radio_manual_changed_at, self.tune_count(radio)
+        self.clock.now = started + 3
+        self.offer('AO-73');self.controller.step()
+        self.assertEqual(self.tune_count(radio), count)
+        self.assertTrue(self.controller.snapshot()['radio_manual_override'])
+        self.clock.now = started + 5
+        latest = self.offer('AO-73', rate=2)
+        self.controller.step()
+        self.verify(latest)
+
+    def test_manual_change_during_an_inflight_tune_enters_pause_instead_of_stopping_control(self):
+        radio = self.start_pass()
+        original_write = radio.write
+        changed = []
+        def tune_manually(frame):
+            length = original_write(frame)
+            if frame[4] == 0x05 and not changed:
+                radio.frequencies[radio.selected] += 1000
+                changed.append(True)
+            return length
+        radio.write = tune_manually
+        self.offer(rate=2);self.controller.step()
+        self.assertTrue(changed)
+        self.assertTrue(self.controller.snapshot()['enabled'])
+        self.assertTrue(self.controller.snapshot()['radio_manual_override'])
+        self.assertIsNone(self.controller.snapshot()['error'])
+        radio.write = original_write
+        self.clock.now = self.controller.radio_manual_changed_at + 5
+        row = self.offer(rate=3);self.controller.step()
+        self.verify(row)
+
+    def test_no_retune_after_pass_ends_or_positions_go_stale_and_explicit_stop_clears_pause(self):
+        radio = self.start_pass()
+        radio.frequencies['main'] += 500
+        self.offer();self.controller.step()
+        started, count = self.controller.radio_manual_changed_at, self.tune_count(radio)
+        self.clock.now = started + 10
+        self.controller.step()  # No fresh orbit offer: the previous position is stale.
+        self.assertEqual(self.tune_count(radio), count)
+        self.assertFalse(self.controller.snapshot()['radio_manual_override'])
+        row = self.offer();self.controller.step()
+        self.verify(row)
+        radio.frequencies['main'] += 500
+        self.offer();self.controller.step()
+        self.controller.set_enabled(False, self.settings)
+        self.controller.step()
+        self.assertFalse(self.controller.snapshot()['radio_manual_override'])
+        self.assertEqual(self.controller.snapshot()['radio_manual_resume_seconds'], 0)
+        self.assertTrue(radio.closed)
+
+    def test_lost_ci_v_reply_during_manual_pause_still_reports_connection_failure(self):
+        radio = self.start_pass()
+        radio.frequencies['main'] += 500
+        self.offer();self.controller.step()
+        self.factory.no_ack = True
+        self.offer();self.controller.step()
+        self.assertFalse(self.controller.snapshot()['enabled'])
+        self.assertFalse(self.controller.snapshot()['radio_manual_override'])
+        self.assertIn('did not acknowledge', self.controller.snapshot()['error'])
+        self.assertTrue(radio.closed)
 
 
 if __name__ == '__main__':

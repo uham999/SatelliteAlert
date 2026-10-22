@@ -339,6 +339,10 @@ function renderTracking() {
   $('radioTestBanner').textContent=radioTesting?`Radio connection test in progress · ${h.radio_test_frequency_hz?`MAIN ${mhz(h.radio_test_frequency_hz)} verified`:'Connecting…'} · 145.000 ↔ 145.555 MHz every 2 seconds`:'';
   renderRotatorTest(h.rotator_test);
   renderRadioTest(h.radio_test_result);
+  const manualTuning=Boolean(state.settings.radio_enabled && h.enabled && h.radio_manual_override);
+  $('radioManualNotice').classList.toggle('hidden',!manualTuning);
+  const manualWait=Number.isFinite(h.radio_manual_resume_seconds)?Math.max(0,Math.ceil(h.radio_manual_resume_seconds)):5;
+  $('radioManualNotice').textContent=manualTuning?`Manual radio tuning detected · Doppler updates paused. ${manualWait?`Waiting for ${manualWait} seconds without further frequency changes.`:'Checking frequency stability before resuming.'} Current radio RX: ${mhz(h.radio_observed_rx_hz)}${h.radio_observed_tx_hz==null?'':` · TX: ${mhz(h.radio_observed_tx_hz)}`}. ${state.settings.rotator_enabled && !h.rotator_error?'Rotator tracking continues.':'Positions and alerts continue to update.'}`:'';
   const trackingNotice=h.error?`Live control stopped: ${h.error} RX/TX frequencies below are calculated only. Correct the issue, then press Start live tracking.`:
     notificationOnly?'Notification-only mode. Radio and rotator control are disabled in Settings. Alerts, positions and pass predictions continue.':
     !h.enabled && !h.radio_test_enabled && target?'Live tracking is off. RX/TX frequencies below are calculated only. Press Start live tracking to send adjustments to your configured equipment.':

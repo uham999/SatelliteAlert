@@ -14,6 +14,7 @@ from profiles import MODES
 
 RADIO_TEST_FREQUENCIES = (145_000_000, 145_555_000)
 RADIO_TEST_INTERVAL = 2.0
+RADIO_MANUAL_SETTLE_SECONDS = 5.0
 
 
 def available_ports():
@@ -94,12 +95,17 @@ class HardwareController:
         self.rotator_fault = None
         self.rotator_test_id = None
         self.error_test_id = None
+        self.radio_manual_observed = None
+        self.radio_manual_changed_at = None
+        self.radio_manual_duplex = False
         self.moving = False
         self.state = dict(enabled=False, radio_test_enabled=False, radio_test_frequency_hz=None, radio_test_updates=0,
                           error=None, rotator_error=None, target=None, rotator_status="Off", radio_status="Off",
                           rotator_position=None, commanded_position=None, radio_rx_hz=None, radio_tx_hz=None,
                           radio_verified_at=None, radio_verified_target=None,
-                          direction_updates=0, frequency_updates=0, rotator_test=None, radio_test_result=None)
+                          direction_updates=0, frequency_updates=0, rotator_test=None, radio_test_result=None,
+                          radio_manual_override=False, radio_manual_resume_seconds=0,
+                          radio_observed_rx_hz=None, radio_observed_tx_hz=None)
 
     def start(self):
         self.thread = threading.Thread(target=self._run, name="serial-tracking", daemon=True)
@@ -130,6 +136,7 @@ class HardwareController:
             self.enabled = enabled
             self.radio_test_enabled = False
             self.error_test_id = None
+            self._reset_manual_tuning()
             self.generation += 1
             self.settings = deepcopy(settings)
             self.state.update(enabled=enabled, radio_test_enabled=False, radio_test_frequency_hz=None, error=None, rotator_error=None)
@@ -159,6 +166,7 @@ class HardwareController:
             self.enabled = False
             self.radio_test_enabled = enabled
             self.error_test_id = None
+            self._reset_manual_tuning()
             self.generation += 1
             self.settings = deepcopy(settings)
             self.state.update(enabled=False, radio_test_enabled=enabled, radio_test_frequency_hz=None,
@@ -208,7 +216,11 @@ class HardwareController:
 
     def snapshot(self):
         with self.lock:
-            return deepcopy(self.state)
+            state = deepcopy(self.state)
+            if self.radio_manual_changed_at is not None:
+                state["radio_manual_resume_seconds"] = max(0, math.ceil(
+                    RADIO_MANUAL_SETTLE_SECONDS - (self.monotonic() - self.radio_manual_changed_at)))
+            return state
 
     def test_rotator(self, settings):
         # Serialize with tracking so a C2 reply cannot be consumed by another query.
@@ -404,11 +416,76 @@ class HardwareController:
             if radio_band(sub_hz) == wanted:
                 self._civ(0x07, b"\xb0")
 
+    def _reset_manual_tuning(self):
+        with self.lock:
+            self.radio_manual_observed = self.radio_manual_changed_at = None
+            self.radio_manual_duplex = False
+            self.state.update(radio_manual_override=False, radio_manual_resume_seconds=0,
+                              radio_observed_rx_hz=None, radio_observed_tx_hz=None)
+
+    def _read_tracking_frequencies(self, duplex):
+        # 07 D2 reads MAIN/SUB selection. Preserve the operator's selected band
+        # while reading both frequencies with 03; never set a frequency here.
+        selection = self._civ(0x07, b"\xd2", reply_command=0x07)
+        if selection not in (b"\xd2\x00", b"\xd2\x01"):
+            raise OSError("Invalid IC-9700 MAIN/SUB selection reply.")
+        selected = selection[1]
+        frequencies = {}
+        frequencies[selected] = decode_frequency(self._civ(0x03, reply_command=0x03))
+        other = 1 - selected
+        if duplex or selected == 1:
+            self._civ(0x07, bytes((0xD0 + other,)))
+            try:
+                frequencies[other] = decode_frequency(self._civ(0x03, reply_command=0x03))
+            finally:
+                self._civ(0x07, bytes((0xD0 + selected,)))
+        return frequencies[0], frequencies[1] if duplex else None
+
+    def _begin_manual_tuning(self, observed):
+        with self.lock:
+            self._check_enabled()
+            self.radio_manual_observed = observed
+            self.radio_manual_changed_at = self.monotonic()
+            self.radio_manual_duplex = observed[1] is not None
+            self.state.update(radio_manual_override=True, radio_manual_resume_seconds=math.ceil(RADIO_MANUAL_SETTLE_SECONDS),
+                              radio_observed_rx_hz=observed[0], radio_observed_tx_hz=observed[1],
+                              radio_status=f"Manual tuning · Doppler updates paused until frequency is stable for {RADIO_MANUAL_SETTLE_SECONDS:g} seconds")
+
+    def _manual_tuning_pending(self):
+        with self.lock:
+            previous, observed_before = self.last_radio, self.radio_manual_observed
+            duplex = self.radio_manual_duplex if observed_before is not None else bool(previous and previous[2] is not None)
+        if previous is None and observed_before is None:
+            return False
+        observed = self._read_tracking_frequencies(duplex)
+        with self.lock:
+            self._check_enabled()
+            self.state.update(radio_observed_rx_hz=observed[0], radio_observed_tx_hz=observed[1])
+            if observed_before is None:
+                if any(actual is not None and abs(actual - expected) > 1
+                       for actual, expected in zip(observed, previous[1:])):
+                    self._begin_manual_tuning(observed)
+                    return True
+                return False
+            if observed != observed_before:
+                self._begin_manual_tuning(observed)
+            if self.monotonic() - self.radio_manual_changed_at < RADIO_MANUAL_SETTLE_SECONDS:
+                return True
+            # Force a complete tune to the latest pass, even if the calculated
+            # frequencies are still within the normal command deadband.
+            self.radio_manual_observed = self.radio_manual_changed_at = None
+            self.last_radio = None
+            self.state.update(radio_manual_override=False, radio_manual_resume_seconds=0)
+            return False
+
     def _tune(self, target, settings):
         freq, profile_ = target["doppler"], settings["satellite_profiles"][target["name"]]
         rx, tx = freq["rx_hz"], freq["tx_hz"]
         if rx is None:
             self._state(radio_status="Set a downlink frequency for this satellite")
+            return
+        was_tracking = self.last_radio is not None or self.radio_manual_observed is not None
+        if self._manual_tuning_pending():
             return
         if tx is not None and radio_band(rx) == radio_band(tx):
             raise ValueError("IC-9700 satellite mode needs uplink and downlink in different bands. Leave uplink empty for receive-only tracking.")
@@ -442,16 +519,22 @@ class HardwareController:
             if change_tx:
                 self._civ(0x05, frequency_bcd(tx))
             verified_tx = decode_frequency(self._civ(0x03, reply_command=0x03))
-            if abs(verified_tx - (tx if change_tx else previous_tx)) > 1:
-                raise OSError("Uplink frequency readback differs. Check MAIN/SUB CI-V operation, turn AFC off and avoid manual tuning during live tracking.")
+        else:
+            verified_tx = None
         self._civ(0x07, b"\xd0")
         verified_rx = decode_frequency(self._civ(0x03, reply_command=0x03))
-        if abs(verified_rx - (rx if change_rx else previous_rx)) > 1:
-            raise OSError("Downlink frequency readback differs. Check MAIN/SUB CI-V operation, turn AFC off and avoid manual tuning during live tracking.")
+        tx_differs = tx is not None and abs(verified_tx - (tx if change_tx else previous_tx)) > 1
+        if tx_differs or abs(verified_rx - (rx if change_rx else previous_rx)) > 1:
+            if was_tracking:
+                self._begin_manual_tuning((verified_rx, verified_tx))
+                return
+            band = "Uplink" if tx_differs else "Downlink"
+            raise OSError(f"{band} frequency readback differs. Check MAIN/SUB CI-V operation and turn AFC off.")
         self.last_radio = (identity, rx if change_rx else previous_rx, tx if change_tx else previous_tx)
         self._state(radio_status="Tracking · frequencies verified", radio_rx_hz=verified_rx,
                     radio_tx_hz=verified_tx if tx is not None else None,
                     radio_verified_at=self.utc_clock().isoformat(), radio_verified_target=target["name"],
+                    radio_observed_rx_hz=verified_rx, radio_observed_tx_hz=verified_tx,
                     frequency_updates=self.snapshot()["frequency_updates"] + 1)
 
     def _test_radio(self, settings):
@@ -524,6 +607,7 @@ class HardwareController:
         self.connection_generation = None
         self.rotator_fault = None
         self.radio_test_ready, self.radio_test_index, self.next_radio_test_at = False, 0, None
+        self._reset_manual_tuning()
         if error:
             self._state(error=error)
 
@@ -567,6 +651,8 @@ class HardwareController:
                         self._check_enabled()
                         self.radio = self._open(settings["radio_port"], settings["radio_baud"])
                 if offered is None or self.monotonic() - offered > 6 or target is None:
+                    if self.radio_manual_observed is not None and self._manual_tuning_pending():
+                        return
                     self.last_radio = None
                     self._state(radio_status="Waiting for a fresh in-range satellite" if self.radio else "Not enabled")
                     return
@@ -589,6 +675,8 @@ class HardwareController:
     def _run(self):
         while not self.stop.is_set():
             wait_seconds = min(2, max(0, self.next_radio_test_at - self.monotonic())) if self.radio_test_enabled and self.next_radio_test_at is not None else 2
+            if self.radio_manual_changed_at is not None:
+                wait_seconds = min(wait_seconds, 1)
             self.wake.wait(wait_seconds)
             self.wake.clear()
             self.step()
