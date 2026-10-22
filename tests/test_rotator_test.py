@@ -65,6 +65,53 @@ class RotatorConnectionTests(unittest.TestCase):
                 self.assertEqual(self.controller.snapshot()['rotator_test'], result)
         self.assertEqual(self.factory.devices, [])
 
+    def test_acknowledgement_clears_only_that_result_and_keeps_live_tracking(self):
+        self.start_tracking()
+        result = self.controller.test_rotator(self.settings)
+        rotator, radio = self.controller.rotator, self.controller.radio
+        writes = (rotator.writes[:], radio.writes[:])
+        self.controller.acknowledge_test_result('rotator', result['id'])
+        self.assertIsNone(self.controller.snapshot()['rotator_test'])
+        self.assertTrue(self.controller.snapshot()['enabled'])
+        self.assertEqual((rotator.writes, radio.writes), writes)
+        self.controller.offer(self.target(rate=1, azimuth=102), self.settings)
+        self.controller.step()
+        self.assertGreater(len(radio.writes), len(writes[1]))
+        next_result = self.controller.test_rotator(self.settings)
+        self.assertNotEqual(result['id'], next_result['id'])
+        self.controller.acknowledge_test_result('rotator', result['id'])
+        self.assertEqual(self.controller.snapshot()['rotator_test'], next_result)
+
+    def test_disabling_rotator_during_c2_cannot_republish_the_old_result(self):
+        reading, release = threading.Event(), threading.Event()
+        read = self.factory.rotator_reply
+        original_open = self.controller._open
+        def open_waiting(*args):
+            device = original_open(*args)
+            original_read = device.read_until
+            def wait_for_reply(*read_args):
+                reading.set()
+                if not release.wait(2):
+                    raise OSError('Test fixture wait expired')
+                return original_read(*read_args)
+            device.read_until = wait_for_reply
+            return device
+        results = []
+        with patch.object(self.controller, '_open', side_effect=open_waiting):
+            worker = threading.Thread(target=lambda: results.append(self.controller.test_rotator(self.settings)))
+            worker.start()
+            try:
+                self.assertTrue(reading.wait(1))
+                self.controller.set_enabled(False, {**self.settings, 'rotator_enabled': False})
+            finally:
+                release.set()
+                worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(results[0]['response'], read.decode('ascii'))
+        self.assertIsNone(self.controller.snapshot()['rotator_test'])
+        self.assertIsNone(self.controller.snapshot()['rotator_position'])
+        self.assertTrue(self.factory.devices[-1].closed)
+
     def test_compact_c2_reply_succeeds_in_connection_test_and_live_tracking(self):
         self.factory.rotator_reply = b'AZ=183EL=010\r\n'
         result = self.controller.test_rotator(self.settings)

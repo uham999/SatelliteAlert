@@ -473,8 +473,10 @@ selection; `\r` and `\n` make the reply's line endings visible. No response with
 Replies such as `AZ=183EL=010\r\n` are valid: the space between the azimuth and
 elevation is optional. Both the connection test and live tracking accept them,
 as well as spaced replies and the older `+aaaa+eeee` format.
-The last result remains visible across dashboard refreshes until another test
-or a program restart.
+Press **Acknowledge** in the result panel to remove it. Acknowledged results stay
+cleared across dashboard refreshes. Switching off rotator control in Settings
+also clears the result and hides its equipment readbacks; switching it back on
+does not bring the old result back. A new test replaces the previous result.
 
 During live tracking, the query shares the existing rotator connection and is
 serialized with other equipment commands. It preserves live tracking and radio
@@ -499,6 +501,15 @@ The button changes to **Stop test radio connection** and a yellow label shows
 Press the button again to stop and close the port; the radio stays at its last
 test frequency. Missing replies, rejected commands and incorrect readback stop
 the test and display the error.
+
+After the radio test stops, a result panel shows the test time, port, baud,
+last verified MAIN frequency and number of verified changes, or the error.
+Press **Acknowledge** to remove the result and its old test readback. This does
+not acknowledge satellite alerts or interrupt live tracking. The yellow progress
+label stays visible throughout a running test; stop the test before acknowledging.
+Switching off radio control in Settings stops testing and clears the result and
+old radio readbacks. Disabled devices' test results and equipment details stay
+hidden until their controls are enabled again and new data is available.
 
 The test works without a visible satellite and independently of alert pauses.
 Starting it stops live tracking and

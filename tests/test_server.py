@@ -222,6 +222,44 @@ class DashboardServerTests(unittest.TestCase):
         self.assertFalse(self.monitor.alerts[-1]["acknowledged"])
         self.assertEqual(self.monitor.hardware.snapshot()["rotator_test"], result)
 
+    def test_connection_results_can_be_acknowledged_through_authenticated_http_without_acknowledging_alerts(self):
+        self.monitor.test_alert()
+        self.monitor.toggle_pause(True)
+        self.monitor.hardware.ports_provider = lambda: []
+        _, body, _ = self.request('POST', '/api/rotator-test')
+        result = json.loads(body)['result']
+        payload = {'device': 'rotator', 'id': result['id']}
+        self.assertEqual(self.request('POST', '/api/acknowledge-test', payload, {'X-Satellite-Token': 'wrong'})[0], 403)
+        self.assertIsNotNone(self.monitor.hardware.snapshot()['rotator_test'])
+        self.assertEqual(self.request('POST', '/api/acknowledge-test', payload)[0], 200)
+        _, body, _ = self.request('GET', '/api/state')
+        state = json.loads(body)
+        self.assertIsNone(state['hardware']['rotator_test'])
+        self.assertTrue(state['paused'])
+        self.assertFalse(state['alerts'][-1]['acknowledged'])
+        self.assertEqual(self.request('POST', '/api/acknowledge-test', {'device': 'unknown', 'id': result['id']})[0], 400)
+        self.assertEqual(self.request('POST', '/api/acknowledge-test', {'device': 'radio'})[0], 400)
+
+    def test_saving_disabled_controls_removes_connection_results_and_old_readbacks(self):
+        clock = Clock()
+        factory = Factory(clock)
+        self.monitor.hardware.serial_factory = factory
+        self.monitor.hardware.monotonic = clock
+        self.monitor.hardware.ports_provider = lambda: [{'device': 'COM10'}, {'device': 'COM11'}]
+        self.assertEqual(self.request('POST', '/api/settings', {'rotator_port': 'COM10', 'radio_port': 'COM11'})[0], 200)
+        self.assertEqual(self.request('POST', '/api/rotator-test')[0], 200)
+        self.assertEqual(self.request('POST', '/api/radio-test', {'enabled': True})[0], 200)
+        self.monitor.hardware.step()
+        self.assertEqual(self.request('POST', '/api/radio-test', {'enabled': False})[0], 200)
+        before = self.monitor.hardware.snapshot()
+        self.assertIsNotNone(before['rotator_test'])
+        self.assertIsNotNone(before['radio_test_result'])
+        self.assertEqual(self.request('POST', '/api/settings', {'rotator_enabled': False, 'radio_enabled': False})[0], 200)
+        _, body, _ = self.request('GET', '/api/state')
+        state = json.loads(body)['hardware']
+        for key in ('rotator_test', 'radio_test_result', 'rotator_position', 'radio_rx_hz', 'radio_tx_hz', 'radio_verified_at'):
+            self.assertIsNone(state[key], key)
+
     def test_closing_windows_popup_keeps_dashboard_alert_until_explicit_acknowledgement(self):
         alert = self.monitor._make_alert("ISS", False, self.now, self.now + timedelta(seconds=60), 35, 65,
                                          horizon_rise=self.now + timedelta(minutes=5))

@@ -28,9 +28,15 @@
       <section id="view-dashboard" class="view">
         <div class="page-title"><div><div class="eyebrow">LOOK UP. STAY READY.</div><h1>Your next satellite pass</h1><p>Live positions and passes above your local horizon.</p></div><div class="toolbar"><button id="testAlert" class="button">♪ Test alert</button><button id="radioTestToggle" class="button hidden" aria-pressed="false">Test radio connection</button><button id="rotatorTest" class="button hidden">Test rotator connection</button><button id="refresh" class="button">↻ Refresh orbital data</button><button id="pause" class="button">Pause alerts</button><button id="trackingToggle" class="button dark">Start live tracking</button></div></div>
         <div id="radioTestBanner" class="radio-test-banner hidden" role="status" aria-live="polite"></div>
-        <div id="rotatorTestResult" class="rotator-test-result panel hidden" role="status" aria-live="polite">
-          <div class="rotator-test-heading"><strong id="rotatorTestTitle"></strong><time id="rotatorTestTime"></time></div>
+        <div id="radioTestResult" class="connection-test-result panel hidden" role="status" aria-live="polite">
+          <div class="connection-test-heading"><strong id="radioTestTitle"></strong><time id="radioTestTime"></time></div>
+          <p id="radioTestDetails"></p><p id="radioTestMessage"></p>
+          <button id="acknowledgeRadioTest" class="button" type="button" aria-label="Acknowledge radio connection test result">Acknowledge</button>
+        </div>
+        <div id="rotatorTestResult" class="connection-test-result panel hidden" role="status" aria-live="polite">
+          <div class="connection-test-heading"><strong id="rotatorTestTitle"></strong><time id="rotatorTestTime"></time></div>
           <p id="rotatorTestDetails"></p><p id="rotatorTestMessage"></p><pre id="rotatorTestResponse"></pre>
+          <button id="acknowledgeRotatorTest" class="button" type="button" aria-label="Acknowledge rotator connection test result">Acknowledge</button>
         </div>
         <div id="trackingNotice" class="notice hidden" role="status" aria-live="polite"></div>
         <div class="overview">

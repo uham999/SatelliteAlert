@@ -70,6 +70,90 @@ class RadioConnectionTests(unittest.TestCase):
         self.assertTrue(radio.closed)
         self.assertIsNone(self.controller.snapshot()['radio_test_frequency_hz'])
 
+    def test_completed_test_can_be_acknowledged_without_serial_commands_or_returning_on_refresh(self):
+        radio = self.start_test()
+        self.clock.now += 2
+        self.controller.step()
+        self.controller.set_radio_test(False, self.settings)
+        self.controller.step()
+        result = self.controller.snapshot()['radio_test_result']
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(result['frequency_hz'], 145_555_000)
+        self.assertEqual(result['updates'], 2)
+        writes = radio.writes[:]
+        self.controller.acknowledge_test_result('radio', result['id'])
+        self.controller.step()
+        state = self.controller.snapshot()
+        self.assertIsNone(state['radio_test_result'])
+        self.assertIsNone(state['radio_rx_hz'])
+        self.assertIsNone(state['radio_verified_target'])
+        self.assertEqual(radio.writes, writes)
+        self.assertFalse(state['enabled'] or state['radio_test_enabled'])
+
+    def test_running_test_and_newer_test_cannot_be_dismissed_by_an_old_acknowledgement(self):
+        radio = self.start_test()
+        first = self.controller.snapshot()['radio_test_result']
+        with self.assertRaisesRegex(ValueError, 'Stop the radio connection test'):
+            self.controller.acknowledge_test_result('radio', first['id'])
+        self.controller.set_radio_test(False, self.settings)
+        self.controller.set_radio_test(True, self.settings)
+        second = self.controller.snapshot()['radio_test_result']
+        self.assertNotEqual(first['id'], second['id'])
+        self.controller.acknowledge_test_result('radio', first['id'])
+        self.assertEqual(self.controller.snapshot()['radio_test_result'], second)
+        self.assertTrue(self.controller.snapshot()['radio_test_enabled'])
+        self.controller.step()
+        self.assertTrue(radio.closed)
+        for device, result_id in (('unknown', first['id']), ('radio', None), ('rotator', ''), (None, 'test')):
+            with self.assertRaises(ValueError):
+                self.controller.acknowledge_test_result(device, result_id)
+
+    def test_acknowledging_old_radio_test_preserves_current_satellite_readback(self):
+        self.start_test()
+        self.controller.set_radio_test(False, self.settings)
+        result = self.controller.snapshot()['radio_test_result']
+        row = dict(name='ISS', status='tracking', elevation=20, azimuth=100, range_rate_km_s=-1)
+        row['doppler'] = doppler(self.settings['satellite_profiles']['ISS'], -1)
+        self.controller.offer(row, self.settings)
+        self.controller.set_enabled(True, self.settings)
+        self.controller.step()
+        before = self.controller.snapshot()
+        self.controller.acknowledge_test_result('radio', result['id'])
+        after = self.controller.snapshot()
+        self.assertTrue(after['enabled'])
+        self.assertEqual(after['radio_verified_target'], 'ISS')
+        self.assertEqual(after['radio_rx_hz'], before['radio_rx_hz'])
+        self.assertEqual(after['radio_tx_hz'], before['radio_tx_hz'])
+
+    def test_disabling_devices_clears_both_results_and_readbacks_until_new_tests(self):
+        radio = self.start_test()
+        self.controller.set_radio_test(False, self.settings)
+        self.controller.test_rotator(self.settings)
+        disabled = {**self.settings, 'rotator_enabled': False, 'radio_enabled': False}
+        self.controller.set_enabled(False, disabled)
+        self.controller.step()
+        state = self.controller.snapshot()
+        for key in ('rotator_test', 'radio_test_result', 'rotator_position', 'commanded_position',
+                    'radio_rx_hz', 'radio_tx_hz', 'radio_verified_at', 'radio_verified_target'):
+            self.assertIsNone(state[key], key)
+        self.assertTrue(radio.closed)
+        self.controller.set_enabled(False, self.settings)
+        self.assertIsNone(self.controller.snapshot()['rotator_test'])
+        self.assertIsNone(self.controller.snapshot()['radio_test_result'])
+
+    def test_failed_radio_test_has_dismissible_result_and_clears_its_own_error(self):
+        self.factory.no_ack = True
+        self.controller.set_radio_test(True, self.settings)
+        self.controller.step()
+        state = self.controller.snapshot()
+        result = state['radio_test_result']
+        self.assertEqual(result['status'], 'error')
+        self.assertEqual(result['message'], state['error'])
+        self.assertFalse(state['radio_test_enabled'])
+        self.controller.acknowledge_test_result('radio', result['id'])
+        self.assertIsNone(self.controller.snapshot()['radio_test_result'])
+        self.assertIsNone(self.controller.snapshot()['error'])
+
     def test_vhf_on_sub_is_exchanged_onto_main_before_test_tuning(self):
         self.factory.initial_frequencies = {'main': 435_000_000, 'sub': 145_500_000}
         self.factory.reject_same_band = True

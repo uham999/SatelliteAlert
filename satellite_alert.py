@@ -741,6 +741,8 @@ class Handler(BaseHTTPRequestHandler):
                 monitor.toggle_radio_test(data.get("enabled"))
             elif self.path == "/api/rotator-test":
                 return self._send(200, {"ok": True, "result": monitor.test_rotator()})
+            elif self.path == "/api/acknowledge-test":
+                monitor.hardware.acknowledge_test_result(data.get("device"), data.get("id"))
             elif self.path == "/api/test-alert":
                 monitor.test_alert()
             elif self.path == "/api/stop":

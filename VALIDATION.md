@@ -450,3 +450,16 @@ unchanged. The [Windows CI run for the parser fix](https://github.com/uham999/Sa
 passed the full suite on both Python 3.12 and 3.14, plus all 30 DOM checks and
 the launcher checks. The serial regression checks use simulated devices; no
 physical port was opened by the validation suite.
+
+## Connection-test result dismissal — 22 October 2026
+
+Disabling a device clears its connection-test result and old equipment readbacks.
+The dashboard hides disabled devices' results, progress labels and equipment
+details. Completed radio and rotator tests now have an Acknowledge button; a
+cleared result stays cleared on refresh, and a new test has its own identity.
+
+**199 Python tests and 49 offline DOM checks passed.** These include Settings
+disable/re-enable, acknowledgement without changing satellite alerts or live
+tracking, radio-test success and failure, authenticated HTTP requests, stale
+acknowledgements, and disabling a rotator while its C2 response is pending.
+Serial checks use simulated devices; no physical serial port was opened.

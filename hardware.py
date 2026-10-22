@@ -5,6 +5,7 @@ import math
 import re
 import threading
 import time
+from uuid import uuid4
 
 import serial
 from serial.tools import list_ports
@@ -91,12 +92,14 @@ class HardwareController:
         self.last_direction, self.last_radio = None, None
         self.last_position_query = None
         self.rotator_fault = None
+        self.rotator_test_id = None
+        self.error_test_id = None
         self.moving = False
         self.state = dict(enabled=False, radio_test_enabled=False, radio_test_frequency_hz=None, radio_test_updates=0,
                           error=None, rotator_error=None, target=None, rotator_status="Off", radio_status="Off",
                           rotator_position=None, commanded_position=None, radio_rx_hz=None, radio_tx_hz=None,
                           radio_verified_at=None, radio_verified_target=None,
-                          direction_updates=0, frequency_updates=0, rotator_test=None)
+                          direction_updates=0, frequency_updates=0, rotator_test=None, radio_test_result=None)
 
     def start(self):
         self.thread = threading.Thread(target=self._run, name="serial-tracking", daemon=True)
@@ -122,8 +125,11 @@ class HardwareController:
         with self.lock:
             if enabled and self.radio_test_enabled:
                 raise ValueError("Stop the radio connection test before starting live tracking.")
+            if self.radio_test_enabled:
+                self._finish_radio_test()
             self.enabled = enabled
             self.radio_test_enabled = False
+            self.error_test_id = None
             self.generation += 1
             self.settings = deepcopy(settings)
             self.state.update(enabled=enabled, radio_test_enabled=False, radio_test_frequency_hz=None, error=None, rotator_error=None)
@@ -132,6 +138,12 @@ class HardwareController:
                                   radio_status="Connecting" if settings["radio_enabled"] else "Not enabled")
             else:
                 self.state.update(rotator_status="Off", radio_status="Off")
+            if not settings["rotator_enabled"]:
+                self._clear_test_result("rotator")
+                self.state.update(rotator_position=None, commanded_position=None)
+            if not settings["radio_enabled"]:
+                self._clear_test_result("radio")
+                self.state.update(radio_rx_hz=None, radio_tx_hz=None, radio_verified_at=None, radio_verified_target=None)
         self.wake.set()
 
     def set_radio_test(self, enabled, settings):
@@ -142,15 +154,57 @@ class HardwareController:
         with self.lock:
             if enabled == self.radio_test_enabled:
                 return
+            if not enabled:
+                self._finish_radio_test()
             self.enabled = False
             self.radio_test_enabled = enabled
+            self.error_test_id = None
             self.generation += 1
             self.settings = deepcopy(settings)
             self.state.update(enabled=False, radio_test_enabled=enabled, radio_test_frequency_hz=None,
                               error=None, rotator_error=None, rotator_status="Off", radio_status="Connecting for test" if enabled else "Off")
             if enabled:
-                self.state.update(radio_rx_hz=None, radio_tx_hz=None, radio_test_updates=0)
+                self.state.update(radio_rx_hz=None, radio_tx_hz=None, radio_verified_at=None, radio_verified_target=None,
+                                  radio_test_updates=0, radio_test_result=dict(id=uuid4().hex,
+                                  tested_at=self.utc_clock().isoformat(), port=settings["radio_port"], baud=settings["radio_baud"],
+                                  status="running", frequency_hz=None, updates=0, message=""))
         self.wake.set()
+
+    def _finish_radio_test(self, error=None):
+        # Called with self.lock held; a completed test stays until dismissed.
+        result = self.state["radio_test_result"]
+        if result is not None and result["status"] == "running":
+            result.update(status="error" if error else "success" if result["updates"] else "warning",
+                          finished_at=self.utc_clock().isoformat(),
+                          message=error or (f"Test stopped after {result['updates']} verified frequency changes."
+                                            if result["updates"] else "Test stopped before a frequency could be verified."))
+
+    def _clear_test_result(self, device, cancel_pending=True):
+        # Called with self.lock held. Clearing a result never sends serial commands.
+        if device == "rotator":
+            result = self.state["rotator_test"]
+            self.state["rotator_test"] = None
+            if cancel_pending or (result and self.rotator_test_id == result["id"]):
+                self.rotator_test_id = None
+        else:
+            result = self.state["radio_test_result"]
+            self.state["radio_test_result"] = None
+            if self.state["radio_verified_target"] == "Radio connection test":
+                self.state.update(radio_rx_hz=None, radio_tx_hz=None, radio_verified_at=None, radio_verified_target=None)
+            if result and self.error_test_id == result["id"]:
+                self.state.update(error=None, radio_status="Off")
+                self.error_test_id = None
+
+    def acknowledge_test_result(self, device, result_id):
+        if device not in ("rotator", "radio") or not isinstance(result_id, str) or not result_id:
+            raise ValueError("Choose a radio or rotator test result to acknowledge.")
+        with self.lock:
+            result = self.state["rotator_test" if device == "rotator" else "radio_test_result"]
+            if result is None or result["id"] != result_id:
+                return  # An older dashboard cannot dismiss a newer test result.
+            if device == "radio" and self.radio_test_enabled:
+                raise ValueError("Stop the radio connection test before acknowledging its result.")
+            self._clear_test_result(device, cancel_pending=False)
 
     def snapshot(self):
         with self.lock:
@@ -159,12 +213,18 @@ class HardwareController:
     def test_rotator(self, settings):
         # Serialize with tracking so a C2 reply cannot be consumed by another query.
         # A diagnostic query does not change the live tracking or radio-test session.
+        with self.lock:
+            result_id = self.rotator_test_id = uuid4().hex
         with self.io_lock:
             port, baud = settings["rotator_port"], settings["rotator_baud"]
-            result = dict(tested_at=self.utc_clock().isoformat(), port=port or None, baud=baud,
+            result = dict(id=result_id, tested_at=self.utc_clock().isoformat(), port=port or None, baud=baud,
                           command_attempted=False, command_sent=False, response="", position=None, status="warning", message="")
             connection, temporary, reply = None, False, bytearray()
             try:
+                with self.lock:
+                    if self.rotator_test_id != result_id:
+                        result["message"] = "The rotator test was cancelled because Settings changed."
+                        return result
                 if not port.strip():
                     result["message"] = "No rotator port is configured. Select a rotator serial port in Settings, then save."
                     return result
@@ -212,7 +272,6 @@ class HardwareController:
                     raise OSError("Incomplete C2 response (missing line ending). Check the rotator port and baud rate.")
                 result.update(status="success", position=position,
                               message=f"Reported azimuth {position['azimuth']}° · elevation {position['elevation']}°.")
-                self._state(rotator_position=position)
                 if connection is self.rotator:
                     self.last_position_query = self.monotonic()
                 return result
@@ -226,7 +285,11 @@ class HardwareController:
                         connection.close()
                     except Exception as error:
                         result.update(status="error", message=f"{result['message']} Could not close the test port: {error}")
-                self._state(rotator_test=deepcopy(result))
+                with self.lock:
+                    if self.rotator_test_id == result["id"]:
+                        self.state["rotator_test"] = deepcopy(result)
+                        if result["position"] is not None:
+                            self.state["rotator_position"] = deepcopy(result["position"])
 
     def _state(self, **values):
         with self.lock:
@@ -413,9 +476,13 @@ class HardwareController:
         # Orbit updates can wake the worker early; only send a tune when it is due.
         # Schedule from the write, so acknowledgement time does not extend each interval.
         self.next_radio_test_at = sent_at + RADIO_TEST_INTERVAL
-        self._state(radio_status="Connection test · frequency verified", radio_rx_hz=verified, radio_tx_hz=None,
-                    radio_verified_at=self.utc_clock().isoformat(), radio_verified_target="Radio connection test",
-                    radio_test_frequency_hz=verified, radio_test_updates=self.snapshot()["radio_test_updates"] + 1)
+        with self.lock:
+            self._check_enabled()
+            verified_at, updates = self.utc_clock().isoformat(), self.state["radio_test_updates"] + 1
+            self.state.update(radio_status="Connection test · frequency verified", radio_rx_hz=verified, radio_tx_hz=None,
+                              radio_verified_at=verified_at, radio_verified_target="Radio connection test",
+                              radio_test_frequency_hz=verified, radio_test_updates=updates)
+            self.state["radio_test_result"].update(frequency_hz=verified, verified_at=verified_at, updates=updates)
 
     def _halt_rotator(self):
         if self.rotator and self.moving:
@@ -510,6 +577,9 @@ class HardwareController:
             except Exception as error:
                 with self.lock:
                     if self.generation == generation:
+                        if radio_test_enabled:
+                            self._finish_radio_test(str(error))
+                            self.error_test_id = self.state["radio_test_result"]["id"]
                         self.enabled = self.radio_test_enabled = False
                         self.generation += 1
                         self.state.update(enabled=False, radio_test_enabled=False, radio_test_frequency_hz=None,
