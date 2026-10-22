@@ -330,6 +330,9 @@ the earliest predicted alert first. Satellites without one in the forecast go
 last. Satellites with individually paused notifications follow those with
 notifications enabled. Equal alert times retain the configured satellite order.
 The global Pause alerts control does not change predicted times or the order.
+Each satellite's watch-list card shows its current elevation and azimuth, plus
+**Next pass max**: the predicted maximum elevation of that next qualifying pass.
+A dash is shown when no qualifying pass is available in the forecast.
 
 Pause controls apply immediately when saved, without recalculating or
 acknowledging an existing pass alert.

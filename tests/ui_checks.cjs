@@ -101,6 +101,25 @@ test('initial dashboard renders equipment preview and seven editable profiles wi
   assert.equal($('earthToggle').checked,true);assert.deepEqual(errors,[]);
 });
 
+test('watch-list cards show the next pass maximum separately from current elevation and update with the forecast',async t=>{
+  const {$,server,refresh}=await dashboard(t);
+  const satellite=server.satellites.find(row=>row.name==='ISS');
+  satellite.next_pass={alert_at:new Date(Date.now()+3600000).toISOString(),peak_elevation:78.6};
+  const metrics=()=>Array.from($('fleet').querySelector('[data-satellite="ISS"]').querySelectorAll('.sat-metrics > div'),element=>[element.querySelector('span').textContent,element.querySelector('strong').textContent]);
+  await refresh();
+  assert.deepEqual(metrics(),[['ELEVATION','62.0°'],['AZIMUTH','175°'],['NEXT PASS MAX','78.6°']]);
+  assert.equal($('fleet').querySelectorAll('.sat-metrics > div:last-child strong').length,7);
+  satellite.elevation=25;
+  satellite.next_pass.peak_elevation=45.2;
+  await refresh();
+  assert.deepEqual(metrics(),[['ELEVATION','25.0°'],['AZIMUTH','175°'],['NEXT PASS MAX','45.2°']]);
+  satellite.next_pass.peak_elevation=null;
+  await refresh();assert.equal(metrics()[2][1],'—');
+  satellite.next_pass=null;
+  await refresh();assert.equal(metrics()[2][1],'—');
+  assert.match($('fleet').querySelector('[data-satellite="ISS"] .sat-bottom').textContent,/No qualifying pass in forecast/);
+});
+
 test('Earth click, expand button and keyboard open the live dialog and close button dismisses it',async t=>{
   const { $,w }=await dashboard(t);
   $('sky').click();assert.equal($('skyDialog').open,true);
