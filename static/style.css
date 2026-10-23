@@ -48,3 +48,4 @@ body{line-height:1.5}
 .connection-test-result{padding:18px 20px;margin-bottom:24px;font-size:18px;border-color:var(--teal)}.connection-test-result.test-warning{background:#fff8df;border-color:#d3a626}.connection-test-result.test-error{background:#fff0e9;border-color:#bf744c}.connection-test-heading{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px 20px}.connection-test-heading strong{font-size:22px}.connection-test-result p{margin:10px 0}.connection-test-result pre{font:18px var(--mono);line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0 0}.connection-test-result .button{margin-top:12px}
 .alert-banner.awaiting-acknowledgement{animation:none}.history-actions{display:flex;flex-direction:column;align-items:flex-end;gap:12px}.history-actions .button{white-space:normal}
 @media(max-width:570px){.history-item{flex-wrap:wrap}.history-actions{align-items:flex-start}}
+.overview + .schedule{margin-top:24px}
