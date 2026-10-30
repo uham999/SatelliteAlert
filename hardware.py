@@ -92,6 +92,7 @@ class HardwareController:
         self.settings, self.target, self.offered_at = None, None, None
         self.rotator, self.radio = None, None
         self.last_direction, self.last_radio = None, None
+        self.last_radio_offsets = (0, 0)
         self.last_position_query = None
         self.rotator_fault = None
         self.rotator_test_id = None
@@ -499,8 +500,9 @@ class HardwareController:
         identity = (target["name"], modes, tx is not None)
         first = self.last_radio is None or self.last_radio[0] != identity
         previous_rx, previous_tx = (None, None) if first else self.last_radio[1:]
-        change_rx = first or abs(rx - previous_rx) >= settings["radio_step_hz"]
-        change_tx = tx is not None and (first or abs(tx - previous_tx) >= settings["radio_step_hz"])
+        offsets = (freq.get("rx_offset_hz", 0), freq.get("tx_offset_hz", 0))
+        change_rx = first or offsets[0] != self.last_radio_offsets[0] or abs(rx - previous_rx) >= settings["radio_step_hz"]
+        change_tx = tx is not None and (first or offsets[1] != self.last_radio_offsets[1] or abs(tx - previous_tx) >= settings["radio_step_hz"])
         if not change_rx and not change_tx:
             return
         if first:
@@ -534,6 +536,7 @@ class HardwareController:
             band = "Uplink" if tx_differs else "Downlink"
             raise OSError(f"{band} frequency readback differs. Check MAIN/SUB CI-V operation and turn AFC off.")
         self.last_radio = (identity, rx if change_rx else previous_rx, tx if change_tx else previous_tx)
+        self.last_radio_offsets = offsets
         self._state(radio_status="Tracking · frequencies verified", radio_rx_hz=verified_rx,
                     radio_tx_hz=verified_tx if tx is not None else None,
                     radio_verified_at=self.utc_clock().isoformat(), radio_verified_target=target["name"],

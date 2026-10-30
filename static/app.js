@@ -11,6 +11,7 @@ let automaticProfileValues={}, manualProfileFields=new Set();
 const profileFields={profileRx:'downlink_mhz',profileTx:'uplink_mhz',profileRxMode:'downlink_mode',profileTxMode:'uplink_mode',profileNotes:'notes'};
 const profileEmpty={profileRx:'',profileTx:'',profileRxMode:'USB',profileTxMode:'LSB',profileNotes:''};
 let worldLand=null, worldLandRequest=null;
+let passNudgeBusy=false;
 const earthImage = new Image();
 const earlyAlertMinutes = {before_horizon_5:5, before_horizon:10, before_horizon_20:20};
 earthImage.addEventListener('load',drawSky);
@@ -330,6 +331,30 @@ function drawSatelliteMarkers(ctx,visible,point,w,h) {
 }
 
 function mhz(value){return value==null?'—':`${(value/1000000).toFixed(6)} MHz`;}
+function signedHz(value){return `${value>0?'+':value<0?'−':''}${Math.abs(value).toLocaleString('en-GB')} Hz`;}
+function renderPassNudges(target) {
+  const pass=target && target.pass_frequency,f=target && target.doppler || {};
+  $('passFrequencyControls').classList.toggle('hidden',!pass);
+  if(!pass)return;
+  $('passFrequencyCaption').textContent=`${target.name}: temporary base frequency offsets for this pass only, applied before Doppler correction. Every new pass starts at 0 Hz. Saved frequencies stay unchanged.`;
+  for(const channel of ['rx','tx']){
+    const base=f[`${channel}_base_hz`],offset=pass[`${channel}_offset_hz`] || 0;
+    $(channel+'Nudges').disabled=passNudgeBusy || base==null;
+    $(channel+'PassOffset').textContent=signedHz(offset);
+    $(channel+'PassBase').textContent=base==null?(channel==='tx'?'Receive only: no uplink frequency configured.':'Set a downlink frequency in Settings.'):`Saved base: ${mhz(f[`${channel}_standard_hz`] ?? base-offset)} · This pass base: ${mhz(base)}`;
+  }
+}
+$('passFrequencyControls').addEventListener('click',async event=>{
+  const button=event.target.closest('[data-nudge-channel]');
+  if(!button || passNudgeBusy || !state?.tracking_target?.pass_frequency)return;
+  const target=state.tracking_target;
+  passNudgeBusy=true;renderPassNudges(target);
+  try{
+    await post('/api/pass-frequency',{name:target.name,pass_id:target.pass_frequency.id,channel:button.dataset.nudgeChannel,step_hz:Number(button.dataset.nudgeStep)});
+    await refreshState();
+  }catch(error){toast(error.message);}
+  finally{passNudgeBusy=false;renderPassNudges(state && state.tracking_target);}
+});
 function liveDetails(row) {
   const f=row.doppler || {};
   const ground=Number.isFinite(row.ground_latitude)?`<p class="ground-position">Above ${Math.abs(row.ground_latitude).toFixed(2)}° ${row.ground_latitude>=0?'N':'S'}, ${Math.abs(row.ground_longitude).toFixed(2)}° ${row.ground_longitude>=0?'E':'W'} · altitude ${Math.round(row.satellite_height_km)} km</p>`:'';
@@ -363,6 +388,7 @@ function renderTracking() {
   $('trackingNotice').textContent=trackingNotice;$('trackingNotice').classList.toggle('hidden',!trackingNotice);
   $('trackingSummary').textContent=h.radio_test_enabled?'Radio connection test active. Live satellite tracking is stopped.':h.enabled?(target?`Tracking ${target.name} · highest current elevation · ${visible.length} above the horizon`:'Tracking is enabled. Waiting for a satellite above the tracking limit.'):notificationOnly?'Notification-only mode. Enable devices in Settings if you want this app to control equipment.':'Live adjustments are off. Start live tracking to control your configured equipment.';
   $('liveTarget').innerHTML=target?liveDetails(target):'<p class="subtle">No watched satellite is currently above the tracking limit.</p>';
+  renderPassNudges(target);
   const pos=h.rotator_position,command=h.commanded_position;
   $('equipmentStatus').classList.toggle('hidden',notificationOnly);
   $('equipmentStatus').innerHTML=`<div class="equipment-grid">${state.settings.rotator_enabled?`<div><strong>Rotator · ${esc(h.rotator_status)}</strong><p>Reported: ${pos?`az ${pos.azimuth}° · el ${pos.elevation}°`:'—'}</p><p>Last command: ${command?`az ${command.azimuth}° · el ${command.elevation}°`:'—'}</p></div>`:''}${state.settings.radio_enabled?`<div><strong>Radio · ${esc(h.radio_status)}</strong><p>Last verified RX: ${mhz(h.radio_rx_hz)}</p><p>Last verified TX: ${mhz(h.radio_tx_hz)}</p><p>${h.radio_verified_at?`Last radio readback: ${formatTime(h.radio_verified_at,true,true)} · ${esc(h.radio_verified_target)}`:'No radio readback yet.'}</p><p>Pass frequency updates: ${h.frequency_updates || 0}</p></div>`:''}</div>${state.settings.rotator_enabled && h.rotator_error?`<p class="equipment-error">Rotator: ${esc(h.rotator_error)}${h.enabled && state.settings.radio_enabled?' Radio control remains enabled.':''}</p>`:''}${!notificationOnly && h.error?`<p class="equipment-error">${esc(h.error)}</p>`:''}`;

@@ -168,6 +168,7 @@ class Monitor:
         self.hardware = HardwareController()
         self.frequency_lookup = FrequencyLookup()
         self.tracking_target = None
+        self.pass_frequencies = {}  # Temporary per-visible-pass offsets; never written to settings.
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.manual_refresh = False
@@ -296,6 +297,12 @@ class Monitor:
             if hardware_changed:
                 self.hardware.set_enabled(False, settings)
             atomic_json(self.root / "settings.json", settings)
+            if any(settings[key] != self.settings[key] for key in ("latitude", "longitude", "observer_height_m")):
+                self.pass_frequencies.clear()
+            else:
+                for name in list(self.pass_frequencies):
+                    if name not in settings["satellites"] or settings["satellite_profiles"].get(name) != self.settings["satellite_profiles"].get(name):
+                        del self.pass_frequencies[name]
             self.settings = settings
             now = self.clock()
             if notification_changes:
@@ -347,11 +354,61 @@ class Monitor:
         atomic_json(self.data / "alerts.json", {"ledger": self.ledger, "alerts": self.alerts})
 
     def _update_tracking(self):
+        now = self.clock()
+        models = {name: (satellite, observer) for name, satellite, observer in self.models}
         for row in self.satellite_status:
+            name = row["name"]
+            session = self.pass_frequencies.get(name)
+            if session and (session["norad"] != row.get("norad") or
+                    (session["ends_at"] is not None and now >= session["ends_at"])):
+                self.pass_frequencies.pop(name, None)
+                session = None
+            visible = row.get("status") == "tracking" and row.get("elevation", -90) >= 0
+            if not visible:
+                # A forecast rebuild briefly has no positions. Keep the pass until
+                # the next position sample, but end it on horizon set or invalid data.
+                if row.get("status") != "tracking" or "elevation" in row:
+                    self.pass_frequencies.pop(name, None)
+                session = None
+            elif session is None and name in models:
+                try:
+                    end = self.calculator.horizon_set(*models[name], now)
+                except Exception:
+                    LOG.exception("Unable to determine pass end for %s", name)
+                    end = now + timedelta(minutes=2)  # Fail closed if the monitor misses horizon set.
+                session = dict(id=secrets.token_hex(16), norad=row.get("norad"), rx_offset_hz=0, tx_offset_hz=0,
+                               ends_at=end + timedelta(minutes=2) if end else None)
+                self.pass_frequencies[name] = session
+            row["pass_frequency"] = ({key: session[key] for key in ("id", "rx_offset_hz", "tx_offset_hz")}
+                                      if session else None)
             if row.get("status") == "tracking" and "range_rate_km_s" in row:
-                row["doppler"] = doppler(self.settings["satellite_profiles"][row["name"]], row["range_rate_km_s"])
+                row["doppler"] = doppler(self.settings["satellite_profiles"][name], row["range_rate_km_s"],
+                    session["rx_offset_hz"] if session else 0, session["tx_offset_hz"] if session else 0)
         self.tracking_target = select_target(self.satellite_status, self.settings)
         self.hardware.offer(self.tracking_target, self.settings)
+
+    def nudge_frequency(self, name, pass_id, channel, step_hz):
+        if not isinstance(name, str) or not isinstance(pass_id, str) or channel not in ("rx", "tx"):
+            raise ValueError("Choose the current satellite pass and RX or TX.")
+        if isinstance(step_hz, bool) or not isinstance(step_hz, int) or step_hz not in (-1000, -100, 0, 100, 1000):
+            raise ValueError("Choose a 100 Hz or 1,000 Hz nudge, or reset to zero.")
+        self.tick()  # Validate against a fresh position, including a pass ending during a click.
+        with self.lock:
+            target = self.tracking_target
+            session = self.pass_frequencies.get(name)
+            if target is None or target["name"] != name or session is None or session["id"] != pass_id:
+                raise ValueError("This satellite pass is no longer selected or above the tracking limit. Reload the live view.")
+            profile_ = self.settings["satellite_profiles"][name]
+            base = profile_["downlink_mhz" if channel == "rx" else "uplink_mhz"]
+            if base is None:
+                raise ValueError("Set a saved frequency for this channel before applying a pass offset.")
+            key = channel + "_offset_hz"
+            offset = session[key] + step_hz if step_hz else 0
+            if not 1_000_000 <= round(base * 1_000_000) + offset <= 1_400_000_000:
+                raise ValueError("The adjusted base frequency must remain between 1 and 1,400 MHz.")
+            session[key] = offset
+            self._update_tracking()
+            return deepcopy(self.tracking_target["pass_frequency"])
 
     def toggle_tracking(self, enabled):
         with self.lock:
@@ -754,6 +811,9 @@ class Handler(BaseHTTPRequestHandler):
                 monitor.toggle_pause(data.get("paused"))
             elif self.path == "/api/tracking":
                 monitor.toggle_tracking(data.get("enabled"))
+            elif self.path == "/api/pass-frequency":
+                return self._send(200, {"ok": True, "pass_frequency": monitor.nudge_frequency(
+                    data.get("name"), data.get("pass_id"), data.get("channel"), data.get("step_hz"))})
             elif self.path == "/api/radio-test":
                 monitor.toggle_radio_test(data.get("enabled"))
             elif self.path == "/api/rotator-test":

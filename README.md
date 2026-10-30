@@ -608,13 +608,43 @@ ISS and AO-123 require 67 Hz uplink CTCSS; SO-50 activation uses 74.4 Hz. Servic
 availability and spacecraft schedules can change. Frequencies remain editable
 and are not silently replaced on an orbital-data refresh.
 
+### Temporary frequency nudges for the current pass
+
+During a visible pass, **Live satellite & equipment** shows separate receive
+(RX) and transmit (TX) controls. Use **−1,000 Hz**, **−100 Hz**, **+100 Hz** or
+**+1,000 Hz** to compensate for a satellite's frequency drift. Each row shows
+the total signed offset from the saved base frequency, the saved base, and the
+adjusted base for this pass. **Reset RX** and **Reset TX** return that channel's
+offset to zero. A channel without a configured frequency has disabled controls.
+
+Each new pass of every satellite starts with **zero RX and TX offsets**. The
+offsets last only until that satellite sets below the horizon; they never alter
+Settings and are also cleared when the app restarts. When overlapping satellites
+exchange the highest elevation, each retains its own adjustment for its current
+pass. An orbital-data refresh during that pass retains its adjustment. Changing
+the saved frequency profile or ground-station location clears the affected
+adjustments.
+
+Nudges work in the calculated preview with live radio control off. With radio
+control and live tracking enabled, they update the radio automatically, even
+when the normal tuning deadband is larger than the nudge. The existing
+five-second manual-radio-tuning pause still applies: the latest pass adjustment
+is used when updates resume. The rotator and alerts are unaffected.
+
+The offsets are applied to the base frequencies **before** Doppler correction:
+
+```text
+pass downlink = saved downlink + RX offset
+pass uplink   = saved uplink   + TX offset
+```
+
 The app computes line-of-sight range rate from the satellite's velocity relative
 to the rotating ground observer. Positive range rate means receding. Its
 first-order Doppler correction is:
 
 ```text
-corrected RX = base downlink × (1 − range_rate / speed_of_light)
-corrected TX = base uplink   × (1 + range_rate / speed_of_light)
+corrected RX = pass downlink × (1 − range_rate / speed_of_light)
+corrected TX = pass uplink   × (1 + range_rate / speed_of_light)
 ```
 
 An approaching satellite gives higher RX and lower TX; receding reverses these.
@@ -623,7 +653,7 @@ and shifts. The default tuning deadband is **10 Hz**, editable from 1–1000 Hz.
 CI-V commands are acknowledged and both frequencies read back before the status
 reports them as verified. This uses independent CI-V frequency updates. It does
 not change the saved base pair when you tune manually. After the 5-second pause,
-it returns to that pair with the latest Doppler correction. Edit the base pair
+it returns to that pair plus any current-pass offsets with the latest Doppler correction. Edit the base pair
 in Settings to keep a different channel.
 
 CI-V frequency data has **five BCD bytes, least significant pair first**. For
@@ -741,7 +771,7 @@ on that computer before relying on it.
 
 See [VALIDATION.md](VALIDATION.md) for the full verification record and limits.
 The GitHub Actions workflow runs the offline suite on Windows with Python 3.12
-and 3.14 for pushes and pull requests. It also runs **56 offline dashboard DOM
+and 3.14 for pushes and pull requests. It also runs **60 offline dashboard DOM
 checks** using Node.js and jsdom. Maintainers can run these with `npm ci` followed
 by `npm test` (Node.js 18 or later). Node.js is not required to run the program;
 the map scripts are already bundled. These DOM checks do not replace visual

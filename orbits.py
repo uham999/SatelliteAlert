@@ -286,6 +286,12 @@ class OrbitCalculator:
             result.append((rise, end, peaks))
         return result
 
+    def horizon_set(self, satellite, observer, now: datetime):
+        """Next horizon set, including passes below the notification minimum."""
+        times, codes = satellite.find_events(observer, self.ts.from_datetime(now),
+            self.ts.from_datetime(now + timedelta(days=1)), altitude_degrees=0)
+        return next((moment.utc_datetime() for moment, code in zip(times, codes) if code == 2), None)
+
     def passes(self, name: str, satellite, observer, settings: dict, now: datetime) -> list[Pass]:
         start = now - timedelta(hours=4)
         cutoff = now + timedelta(hours=settings["forecast_hours"])

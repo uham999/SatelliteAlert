@@ -58,20 +58,25 @@ def validate_profiles(values, names):
     return result
 
 
-def doppler(profile_, range_rate_km_s):
+def doppler(profile_, range_rate_km_s, rx_offset_hz=0, tx_offset_hz=0):
     """First-order one-way Doppler; positive range rate means receding.
 
     RX follows the shifted downlink. TX applies the opposite correction so the
     satellite receives the desired uplink frequency. Observer rotation is already
-    included in Skyfield's topocentric range rate.
+    included in Skyfield's topocentric range rate. Temporary pass offsets change
+    the base in Hz before that correction; the saved profile is never mutated.
     """
     if not math.isfinite(range_rate_km_s) or abs(range_rate_km_s) > 30:
         raise ValueError("Invalid satellite range rate.")
     fraction = range_rate_km_s / 299792.458
     result = dict(range_rate_km_s=range_rate_km_s)
-    for prefix, key, factor in (("rx", "downlink_mhz", 1 - fraction), ("tx", "uplink_mhz", 1 + fraction)):
+    for prefix, key, factor, offset in (("rx", "downlink_mhz", 1 - fraction, rx_offset_hz),
+                                        ("tx", "uplink_mhz", 1 + fraction, tx_offset_hz)):
         base = profile_.get(key)
-        hz = round(base * 1_000_000) if base is not None else None
+        standard = round(base * 1_000_000) if base is not None else None
+        hz = standard + offset if standard is not None else None
+        result[prefix + "_standard_hz"] = standard
+        result[prefix + "_offset_hz"] = offset if standard is not None else 0
         result[prefix + "_base_hz"] = hz
         result[prefix + "_hz"] = round(hz * factor) if hz is not None else None
         result[prefix + "_shift_hz"] = result[prefix + "_hz"] - hz if hz is not None else None

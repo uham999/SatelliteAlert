@@ -1,5 +1,25 @@
 # Verification record
 
+## Temporary pass frequency nudges — 30 October 2026
+
+**222 offline Python tests and 60 dashboard DOM checks passed.** RX and TX have
+independent ±100 Hz and ±1,000 Hz nudges, signed offset labels and per-channel
+reset controls. The adjusted base is used before Doppler correction. Settings
+are never written by nudging, and hardware control is never enabled by a nudge.
+
+Real ISS orbit fixtures verify zero offsets at every new pass, including a
+simulated sleep that skips horizon set, and stale-pass request rejection.
+Horizon set and app restart clear adjustments. Overlapping passes retain their
+own independent offsets, and a forecast rebuild preserves the same pass.
+Receive-only and below-notification-minimum passes are covered. HTTP checks
+verify authentication, bad input rejection and unchanged saved settings.
+Simulated CI-V checks verify that 100 Hz nudges reach both radio bands even with
+a 1,000 Hz tuning deadband, without starting the manual-tuning pause.
+
+The browser automation helper failed during initialization, including one reset
+and retry; rendered browser layout was not verified. No physical radio, rotator
+or speaker tests were performed for this change.
+
 ## Restore previous volume and simplify connection-test controls — 18 October 2026
 
 - **190 Python tests passed on Python 3.12.14 and 3.14.8**, and **44 dashboard

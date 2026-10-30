@@ -25,7 +25,9 @@ async function dashboard(t, changes={}) {
       azimuth:70+index*35,elevation:elevations[name],range_km:1200,range_rate_km_s:-1,
       ground_latitude:48+index*2,ground_longitude:-8+index*2,satellite_height_km:800,
       detail:'Fresh test position',tle_age_days:.1,next_pass:null,
-      doppler:{rx_hz:437801000,tx_hz:145989000,rx_shift_hz:1000,tx_shift_hz:-1000}})),
+      pass_frequency:elevations[name]>=0?{id:`visible-${name}`,rx_offset_hz:0,tx_offset_hz:0}:null,
+      doppler:{rx_hz:437801000,tx_hz:145989000,rx_shift_hz:1000,tx_shift_hz:-1000,
+        rx_standard_hz:437800000,tx_standard_hz:145990000,rx_base_hz:437800000,tx_base_hz:145990000,rx_offset_hz:0,tx_offset_hz:0}})),
     hardware:{enabled:false,radio_test_enabled:false,radio_test_frequency_hz:null,radio_test_result:null,rotator_test:null,error:null,rotator_status:'Off',radio_status:'Off',rotator_position:null,
       commanded_position:null,radio_rx_hz:null,radio_tx_hz:null},...changes};
   const updateTarget=()=>{server.tracking_target=clone(server.satellites.filter(row=>row.status==='tracking' && row.elevation>=0 && !server.settings.satellite_notifications_paused?.[row.name]).sort((a,b)=>b.elevation-a.elevation)[0] || null);};
@@ -80,6 +82,21 @@ async function dashboard(t, changes={}) {
       if(body.enabled && server.hardware.radio_test_enabled){ok=false;result={error:'Stop the radio connection test before starting live tracking.'};}
       else if(body.enabled && (!server.settings.rotator_port || !server.settings.radio_port)){ok=false;result={error:'Select an available serial port in Settings, then save.'};}
       else{server.hardware.enabled=body.enabled;result={ok:true};}
+    } else if(url==='/api/pass-frequency'){
+      if(server.beforeNudge)await server.beforeNudge();
+      const row=server.satellites.find(row=>row.name===body.name);
+      if(server.nudgeError || !row || server.tracking_target?.name!==body.name || row.pass_frequency?.id!==body.pass_id){ok=false;result={error:server.nudgeError || 'This satellite pass is no longer selected.'};}
+      else{
+        const key=body.channel+'_offset_hz';
+        row.pass_frequency[key]=body.step_hz?row.pass_frequency[key]+body.step_hz:0;
+        for(const channel of ['rx','tx']){
+          const standard=row.doppler[channel+'_standard_hz'];
+          row.doppler[channel+'_offset_hz']=row.pass_frequency[channel+'_offset_hz'];
+          row.doppler[channel+'_base_hz']=standard==null?null:standard+row.pass_frequency[channel+'_offset_hz'];
+          row.doppler[channel+'_hz']=standard==null?null:Math.round(row.doppler[channel+'_base_hz']*(1+(channel==='rx'?-1:1)*row.range_rate_km_s/299792.458));
+        }
+        updateTarget();result={ok:true};
+      }
     } else if(url==='/api/radio-test'){
       if(body.enabled && !ports.some(port=>port.device===server.settings.radio_port)){ok=false;result={error:'Select an available radio serial port in Settings, then save.'};}
       else{
@@ -124,6 +141,59 @@ test('initial dashboard renders equipment preview and seven editable profiles wi
   assert.match($('liveTarget').textContent,/437.801000 MHz/);
   assert.equal($('profileList').querySelectorAll('[data-edit]').length,7);
   assert.equal($('earthToggle').checked,true);assert.deepEqual(errors,[]);
+});
+
+test('pass nudges adjust RX and TX independently in both step sizes without saving settings or starting hardware',async t=>{
+  const {$,server,requests}=await dashboard(t);
+  const saved=clone(server.settings);
+  const nudge=async(channel,step)=>{$('passFrequencyControls').querySelector(`[data-nudge-channel="${channel}"][data-nudge-step="${step}"]`).click();await flush();};
+  assert.equal($('passFrequencyControls').classList.contains('hidden'),false);
+  assert.equal($('rxPassOffset').textContent,'0 Hz');assert.equal($('txPassOffset').textContent,'0 Hz');
+  for(const channel of ['rx','tx']){
+    await nudge(channel,1000);assert.equal($(channel+'PassOffset').textContent,'+1,000 Hz');
+    await nudge(channel,100);assert.equal($(channel+'PassOffset').textContent,'+1,100 Hz');
+    await nudge(channel,-1000);assert.equal($(channel+'PassOffset').textContent,'+100 Hz');
+    await nudge(channel,-100);assert.equal($(channel+'PassOffset').textContent,'0 Hz');
+    await nudge(channel,-100);assert.equal($(channel+'PassOffset').textContent,'−100 Hz');
+  }
+  assert.match($('rxPassBase').textContent,/Saved base: 437\.800000 MHz · This pass base: 437\.799900 MHz/);
+  assert.match($('liveTarget').textContent,/437\.801360 MHz/);
+  assert.equal(requests.filter(r=>r.url==='/api/pass-frequency').length,10);
+  assert.deepEqual(requests.find(r=>r.url==='/api/pass-frequency').body,{name:'ISS',pass_id:'visible-ISS',channel:'rx',step_hz:1000});
+  assert.equal(requests.filter(r=>r.url==='/api/settings' || r.url==='/api/tracking').length,0);
+  assert.deepEqual(server.settings,saved);assert.equal(server.hardware.enabled,false);
+  await nudge('rx',0);assert.equal($('rxPassOffset').textContent,'0 Hz');assert.equal($('txPassOffset').textContent,'−100 Hz');
+});
+
+test('pass controls follow handover, show zero on a new pass and hide when no target is visible',async t=>{
+  const {$,server,refresh}=await dashboard(t);
+  const iss=server.satellites.find(row=>row.name==='ISS'),fo=server.satellites.find(row=>row.name==='FO-29');
+  $('passFrequencyControls').querySelector('[data-nudge-channel="rx"][data-nudge-step="1000"]').click();await flush();
+  fo.elevation=80;await refresh();assert.match($('passFrequencyCaption').textContent,/FO-29/);assert.equal($('rxPassOffset').textContent,'0 Hz');
+  fo.elevation=20;await refresh();assert.equal($('rxPassOffset').textContent,'+1,000 Hz');
+  iss.pass_frequency={id:'next-iss-pass',rx_offset_hz:0,tx_offset_hz:0};await refresh();assert.equal($('rxPassOffset').textContent,'0 Hz');
+  server.satellites.forEach(row=>row.elevation=-10);await refresh();assert.equal($('passFrequencyControls').classList.contains('hidden'),true);
+});
+
+test('receive-only and no-frequency channels disable their controls while the other channel remains usable',async t=>{
+  const {$,server,refresh}=await dashboard(t);
+  const row=server.satellites.find(row=>row.name==='ISS');
+  row.doppler.tx_hz=row.doppler.tx_base_hz=row.doppler.tx_standard_hz=null;await refresh();
+  assert.equal($('txNudges').disabled,true);assert.equal($('rxNudges').disabled,false);
+  assert.match($('txPassBase').textContent,/Receive only/);
+  row.doppler.rx_hz=row.doppler.rx_base_hz=row.doppler.rx_standard_hz=null;await refresh();
+  assert.equal($('rxNudges').disabled,true);assert.match($('rxPassBase').textContent,/Set a downlink/);
+});
+
+test('a pending nudge blocks duplicate clicks and server errors preserve the displayed offset',async t=>{
+  const {$,server,requests}=await dashboard(t);
+  let finish;server.beforeNudge=()=>new Promise(resolve=>finish=resolve);
+  const button=$('passFrequencyControls').querySelector('[data-nudge-channel="rx"][data-nudge-step="100"]');
+  button.click();await flush();assert.equal($('rxNudges').disabled,true);
+  button.click();await flush();assert.equal(requests.filter(r=>r.url==='/api/pass-frequency').length,1);
+  server.nudgeError='This satellite pass is no longer selected.';finish();await flush();
+  assert.equal($('rxNudges').disabled,false);assert.equal($('rxPassOffset').textContent,'0 Hz');
+  assert.match($('toast').textContent,/no longer selected/);
 });
 
 test('watch-list cards show the next pass maximum separately from current elevation and update with the forecast',async t=>{

@@ -52,6 +52,26 @@ class DashboardServerTests(unittest.TestCase):
         connection.close()
         return result
 
+    def test_pass_frequency_api_requires_current_pass_and_keeps_settings_unchanged(self):
+        self.now = self.monitor.passes[0].peak_time
+        self.monitor.tick()
+        target = self.monitor.snapshot()["tracking_target"]
+        request = dict(name="ISS", pass_id=target["pass_frequency"]["id"], channel="rx", step_hz=100)
+        saved = (self.root / "settings.json").read_bytes()
+        self.assertEqual(self.request("POST", "/api/pass-frequency", request, {"X-Satellite-Token": "wrong"})[0], 403)
+        status, body, _ = self.request("POST", "/api/pass-frequency", request)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["pass_frequency"]["rx_offset_hz"], 100)
+        state = json.loads(self.request("GET", "/api/state")[1])
+        self.assertEqual(state["tracking_target"]["doppler"]["rx_base_hz"], 437_800_100)
+        self.assertEqual(state["tracking_target"]["doppler"]["tx_base_hz"], 145_990_000)
+        self.assertFalse(state["hardware"]["enabled"])
+        self.assertEqual((self.root / "settings.json").read_bytes(), saved)
+        for values in ({"step_hz": True}, {"step_hz": 500}, {"channel": "both"}, {"pass_id": "old"}):
+            self.assertEqual(self.request("POST", "/api/pass-frequency", {**request, **values})[0], 400)
+        self.now = self.monitor.passes[0].horizon_set + timedelta(seconds=2)
+        self.assertEqual(self.request("POST", "/api/pass-frequency", request)[0], 400)
+
     def test_frequency_lookup_is_authenticated_and_resolves_norad_identity(self):
         reply = {"status": "found", "matches": [{"label": "ISS", "profile": {"downlink_mhz": 437.8}}], "message": "Offline test"}
         with patch.object(self.monitor.frequency_lookup, "lookup", return_value=reply) as lookup:
