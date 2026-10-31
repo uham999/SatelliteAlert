@@ -1,5 +1,27 @@
 # Verification record
 
+## Hide disabled radio and rotator interfaces — 31 October 2026
+
+The two existing device-enable preferences now appear together at the bottom of
+Settings and remain unchecked by default on a new installation. They save
+immediately, stop live equipment control and retain saved ports, baud rates and
+frequency profiles. Hidden configuration fields are disabled and omitted from
+the general Settings save, preserving their stored values.
+
+The interface checks exercise all four radio/rotator combinations and inspect
+visible text and hidden-element state in Settings, the satellite editor, the
+main dashboard, expanded Earth details and How it works. Radio-off mode hides
+frequency fields, modes, lookup, notes, Doppler previews, pass nudges, connection
+tests, results and radio instructions. Rotator-off mode hides its settings,
+tests, status and instructions. Both off leaves positions, predictions, alerts
+and satellite management available. Additional checks cover immediate saving,
+failure rollback, retained configuration, notification-only satellite CRUD,
+independent re-enabling and the radio-only Configure equipment destination.
+
+**222 offline Python tests and 65 dashboard DOM checks passed.** These checks
+verify application logic and DOM visibility; no physical radio, rotator, speaker
+or rendered-browser claim is made.
+
 ## Temporary pass frequency nudges — 30 October 2026
 
 **222 offline Python tests and 60 dashboard DOM checks passed.** RX and TX have

@@ -387,15 +387,22 @@ and label background keeping the purple ground station visible.
 ## Rotator and IC-9700 setup
 
 New installations have both **Enable rotator control for live tracking** and
-**Enable radio control for Doppler adjustments** **unchecked** in Settings.
-Notification-only operation needs no radio or rotator. Positions, pass predictions,
-frequency previews and alerts continue with both controls disabled. Existing
+**Enable radio control for Doppler adjustments** **unchecked** under **Optional
+device controls at the bottom of Settings**. Each checkbox saves immediately.
+Unchecking hides that device's configuration, buttons, status, diagnostics and
+help throughout the app, and stops live equipment control. Disabling radio also
+hides frequency editors, calculated RX/TX displays and pass nudge controls,
+including in the expanded Earth view. Disabling rotator hides its serial settings
+and antenna-control readouts. With both off, the live panel shows satellite
+positions without equipment controls. Positions, pass predictions and alerts
+continue normally. Existing
 saved device choices, ports and baud rates are retained when upgrading.
 The distribution includes `settings.example.json`; the program creates
 `settings.json` on first launch. Keep your existing `settings.json` and `data/`
 when upgrading to retain your station settings and alert history.
 
-Enable the devices you want to use and save Settings. The devices are independent:
+Enable the devices you want at the bottom of Settings, configure the revealed
+settings and save any configuration edits. The devices are independent:
 choose radio only, rotator only or both. The main **Start live tracking** button
 becomes available when at least one device is enabled. Live equipment control
 also starts **off on every program launch**. Press **Start live tracking** at the
@@ -625,7 +632,8 @@ pass. An orbital-data refresh during that pass retains its adjustment. Changing
 the saved frequency profile or ground-station location clears the affected
 adjustments.
 
-Nudges work in the calculated preview with live radio control off. With radio
+When the radio feature is enabled in Settings, nudges work in the calculated
+preview with the main live-tracking switch off. With radio
 control and live tracking enabled, they update the radio automatically, even
 when the normal tuning deadband is larger than the nudge. The existing
 five-second manual-radio-tuning pause still applies: the latest pass adjustment
@@ -771,7 +779,7 @@ on that computer before relying on it.
 
 See [VALIDATION.md](VALIDATION.md) for the full verification record and limits.
 The GitHub Actions workflow runs the offline suite on Windows with Python 3.12
-and 3.14 for pushes and pull requests. It also runs **60 offline dashboard DOM
+and 3.14 for pushes and pull requests. It also runs **65 offline dashboard DOM
 checks** using Node.js and jsdom. Maintainers can run these with `npm ci` followed
 by `npm test` (Node.js 18 or later). Node.js is not required to run the program;
 the map scripts are already bundled. These DOM checks do not replace visual

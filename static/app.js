@@ -12,6 +12,41 @@ const profileFields={profileRx:'downlink_mhz',profileTx:'uplink_mhz',profileRxMo
 const profileEmpty={profileRx:'',profileTx:'',profileRxMode:'USB',profileTxMode:'LSB',profileNotes:''};
 let worldLand=null, worldLandRequest=null;
 let passNudgeBusy=false;
+let deviceFeatureChange=null;
+let profileRadioVisibility=null;
+function deviceFeature(feature) {
+  const settings={...state?.settings,...deviceFeatureChange};
+  return feature==='equipment'?Boolean(settings.radio_enabled || settings.rotator_enabled):Boolean(settings[feature+'_enabled']);
+}
+function renderDeviceFeatures() {
+  document.body.classList.toggle('radio-off',!deviceFeature('radio'));
+  document.body.classList.toggle('rotator-off',!deviceFeature('rotator'));
+  document.body.classList.toggle('equipment-off',!deviceFeature('equipment'));
+  document.querySelectorAll('[data-feature]').forEach(element=>element.hidden=!deviceFeature(element.dataset.feature));
+  document.querySelectorAll('[data-device-settings]').forEach(panel=>panel.querySelectorAll('input,select,textarea,button').forEach(field=>field.disabled=!deviceFeature(panel.dataset.deviceSettings)));
+  $('livePanelTitle').textContent=deviceFeature('equipment')?'Live satellite & equipment':'Live satellite';
+  $('profilesHeading').textContent=deviceFeature('radio')?'Satellites & frequencies':'Satellites';
+  if(deviceFeature('radio'))$('profileName').setAttribute('aria-describedby','profileLookupStatus');else $('profileName').removeAttribute('aria-describedby');
+  $('configureEquipment').dataset.settingsTarget=deviceFeature('rotator')?'equipmentSettings':'radioSettings';
+  if(state && profileRadioVisibility!==deviceFeature('radio')){profileRadioVisibility=deviceFeature('radio');renderProfiles();}
+  for(const key of ['radio_enabled','rotator_enabled']){
+    const field=$('settingsForm').elements.namedItem(key);
+    field.disabled=Boolean(deviceFeatureChange);
+    if(state && !deviceFeatureChange)field.checked=Boolean(state.settings[key]);
+  }
+}
+for(const key of ['radio_enabled','rotator_enabled'])$('settingsForm').elements.namedItem(key).addEventListener('change',async event=>{
+  if(!state || deviceFeatureChange)return;
+  const enabled=event.currentTarget.checked;
+  deviceFeatureChange={[key]:enabled};render();
+  try{
+    await post('/api/settings',{[key]:enabled});
+    await refreshState();
+    $('deviceFeaturesStatus').textContent='Saved immediately. Live equipment control is stopped.';
+    if(deviceFeature('equipment'))await refreshPorts();
+  }catch(error){$('deviceFeaturesStatus').textContent=error.message;toast(error.message);}
+  finally{deviceFeatureChange=null;render();renderProfiles();}
+});
 const earthImage = new Image();
 const earlyAlertMinutes = {before_horizon_5:5, before_horizon:10, before_horizon_20:20};
 earthImage.addEventListener('load',drawSky);
@@ -75,7 +110,7 @@ function fillSettings() {
   }
   $('notificationStatus').textContent = 'Notification' in window ? `Browser permission: ${Notification.permission}` : 'Notifications unavailable in this browser.';
   updateAlarmSettings();
-  renderProfiles();refreshPorts(true);
+  renderProfiles();renderDeviceFeatures();if(deviceFeature('equipment'))refreshPorts(true);
 }
 function updateAlarmSettings() {
   const fields=$('settingsForm').elements;
@@ -226,7 +261,7 @@ function renderStatus() {
   $('soundStatus').textContent=soundStatus+(state.volume_status?` · ${state.volume_status}`:'');
   $('enableSound').classList.toggle('hidden',browserSound);
 }
-function render() {renderStatus();renderNext();renderFleet();renderTable();renderAlerts();renderTracking();}
+function render() {renderStatus();renderNext();renderFleet();renderTable();renderAlerts();renderTracking();renderDeviceFeatures();}
 async function refreshState() {
   const response=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(8000)});
   if(!response.ok) throw new Error('App unavailable');
@@ -334,7 +369,7 @@ function mhz(value){return value==null?'—':`${(value/1000000).toFixed(6)} MHz`
 function signedHz(value){return `${value>0?'+':value<0?'−':''}${Math.abs(value).toLocaleString('en-GB')} Hz`;}
 function renderPassNudges(target) {
   const pass=target && target.pass_frequency,f=target && target.doppler || {};
-  $('passFrequencyControls').classList.toggle('hidden',!pass);
+  $('passFrequencyControls').classList.toggle('hidden',!pass || !deviceFeature('radio'));
   if(!pass)return;
   $('passFrequencyCaption').textContent=`${target.name}: temporary base frequency offsets for this pass only, applied before Doppler correction. Every new pass starts at 0 Hz. Saved frequencies stay unchanged.`;
   for(const channel of ['rx','tx']){
@@ -346,7 +381,7 @@ function renderPassNudges(target) {
 }
 $('passFrequencyControls').addEventListener('click',async event=>{
   const button=event.target.closest('[data-nudge-channel]');
-  if(!button || passNudgeBusy || !state?.tracking_target?.pass_frequency)return;
+  if(!button || passNudgeBusy || !deviceFeature('radio') || !state?.tracking_target?.pass_frequency)return;
   const target=state.tracking_target;
   passNudgeBusy=true;renderPassNudges(target);
   try{
@@ -358,45 +393,43 @@ $('passFrequencyControls').addEventListener('click',async event=>{
 function liveDetails(row) {
   const f=row.doppler || {};
   const ground=Number.isFinite(row.ground_latitude)?`<p class="ground-position">Above ${Math.abs(row.ground_latitude).toFixed(2)}° ${row.ground_latitude>=0?'N':'S'}, ${Math.abs(row.ground_longitude).toFixed(2)}° ${row.ground_longitude>=0?'E':'W'} · altitude ${Math.round(row.satellite_height_km)} km</p>`:'';
-  return `<div class="live-name"><strong>${esc(row.name)}</strong><span class="tag teal">${row.elevation.toFixed(1)}° elevation</span></div>${ground}<div class="live-metrics"><div><span>Satellite azimuth</span><strong>${row.azimuth.toFixed(1)}°</strong></div><div><span>Satellite elevation</span><strong>${row.elevation.toFixed(1)}°</strong></div><div><span>Calculated downlink / RX · Doppler corrected</span><strong>${mhz(f.rx_hz)}</strong><span>${f.rx_shift_hz==null?'Set a frequency':`${f.rx_shift_hz>=0?'+':''}${f.rx_shift_hz} Hz shift`}</span></div><div><span>Calculated uplink / TX · Doppler corrected</span><strong>${mhz(f.tx_hz)}</strong><span>${f.tx_shift_hz==null?'Receive only':`${f.tx_shift_hz>=0?'+':''}${f.tx_shift_hz} Hz shift`}</span></div></div>`;
+  return `<div class="live-name"><strong>${esc(row.name)}</strong><span class="tag teal">${row.elevation.toFixed(1)}° elevation</span></div>${ground}<div class="live-metrics"><div><span>Satellite azimuth</span><strong>${row.azimuth.toFixed(1)}°</strong></div><div><span>Satellite elevation</span><strong>${row.elevation.toFixed(1)}°</strong></div>${deviceFeature('radio')?`<div><span>Calculated downlink / RX · Doppler corrected</span><strong>${mhz(f.rx_hz)}</strong><span>${f.rx_shift_hz==null?'Set a frequency':`${f.rx_shift_hz>=0?'+':''}${f.rx_shift_hz} Hz shift`}</span></div><div><span>Calculated uplink / TX · Doppler corrected</span><strong>${mhz(f.tx_hz)}</strong><span>${f.tx_shift_hz==null?'Receive only':`${f.tx_shift_hz>=0?'+':''}${f.tx_shift_hz} Hz shift`}</span></div>`:''}</div>`;
 }
 function renderTracking() {
-  const h=state.hardware,target=state.tracking_target,visible=visibleSatellites();
+  const h=state.hardware,visible=visibleSatellites(),target=deviceFeature('equipment')?state.tracking_target:visible[0] || null;
   $('trackingToggle').textContent=h.enabled?'Stop live tracking':'Start live tracking';
   $('trackingToggle').classList.toggle('tracking-on',h.enabled);
-  const notificationOnly=!state.settings.rotator_enabled && !state.settings.radio_enabled;
+  const notificationOnly=!deviceFeature('rotator') && !deviceFeature('radio');
   $('trackingToggle').disabled=Boolean(h.radio_test_enabled || (notificationOnly && !h.enabled));
   $('trackingToggle').title=notificationOnly?'Enable radio or rotator control in Settings to use live tracking.':'';
-  $('radioTestToggle').classList.toggle('hidden',!state.settings.radio_enabled);
-  $('rotatorTest').classList.toggle('hidden',!state.settings.rotator_enabled);
+  $('radioTestToggle').classList.toggle('hidden',!deviceFeature('radio'));
+  $('rotatorTest').classList.toggle('hidden',!deviceFeature('rotator'));
   $('radioTestToggle').textContent=h.radio_test_enabled?'Stop test radio connection':'Test radio connection';
   $('radioTestToggle').classList.toggle('radio-testing',Boolean(h.radio_test_enabled));
   $('radioTestToggle').setAttribute('aria-pressed',String(Boolean(h.radio_test_enabled)));
-  const radioTesting=state.settings.radio_enabled && h.radio_test_enabled;
+  const radioTesting=deviceFeature('radio') && h.radio_test_enabled;
   $('radioTestBanner').classList.toggle('hidden',!radioTesting);
   $('radioTestBanner').textContent=radioTesting?`Radio connection test in progress · ${h.radio_test_frequency_hz?`MAIN ${mhz(h.radio_test_frequency_hz)} verified`:'Connecting…'} · 145.000 ↔ 145.555 MHz every 2 seconds`:'';
   renderRotatorTest(h.rotator_test);
   renderRadioTest(h.radio_test_result);
-  const manualTuning=Boolean(state.settings.radio_enabled && h.enabled && h.radio_manual_override);
+  const manualTuning=Boolean(deviceFeature('radio') && h.enabled && h.radio_manual_override);
   $('radioManualNotice').classList.toggle('hidden',!manualTuning);
   const manualWait=Number.isFinite(h.radio_manual_resume_seconds)?Math.max(0,Math.ceil(h.radio_manual_resume_seconds)):5;
-  $('radioManualNotice').textContent=manualTuning?`Manual radio tuning detected · Doppler updates paused. ${manualWait?`Waiting for ${manualWait} seconds without further frequency changes.`:'Checking frequency stability before resuming.'} Current radio RX: ${mhz(h.radio_observed_rx_hz)}${h.radio_observed_tx_hz==null?'':` · TX: ${mhz(h.radio_observed_tx_hz)}`}. ${state.settings.rotator_enabled && !h.rotator_error?'Rotator tracking continues.':'Positions and alerts continue to update.'}`:'';
-  const trackingNotice=h.error?`Live control stopped: ${h.error} RX/TX frequencies below are calculated only. Correct the issue, then press Start live tracking.`:
-    notificationOnly?'Notification-only mode. Radio and rotator control are disabled in Settings. Alerts, positions and pass predictions continue.':
-    !h.enabled && !h.radio_test_enabled && target?'Live tracking is off. RX/TX frequencies below are calculated only. Press Start live tracking to send adjustments to your configured equipment.':
-    h.enabled && !state.settings.radio_enabled && target?'Radio adjustments are disabled in Settings. RX/TX frequencies below are calculated only. Enable the radio, save Settings, then start live tracking.':'';
+  $('radioManualNotice').textContent=manualTuning?`Manual radio tuning detected · Doppler updates paused. ${manualWait?`Waiting for ${manualWait} seconds without further frequency changes.`:'Checking frequency stability before resuming.'} Current radio RX: ${mhz(h.radio_observed_rx_hz)}${h.radio_observed_tx_hz==null?'':` · TX: ${mhz(h.radio_observed_tx_hz)}`}. ${deviceFeature('rotator') && !h.rotator_error?'Rotator tracking continues.':'Positions and alerts continue to update.'}`:'';
+  const trackingNotice=notificationOnly || deviceFeatureChange?'':h.error?`Live control stopped: ${h.error} Correct the issue, then press Start live tracking.`:
+    !h.enabled && !h.radio_test_enabled && target?`Live tracking is off.${deviceFeature('radio')?' RX/TX frequencies below are calculated only.':''} Press Start live tracking to send adjustments to your configured equipment.`:'';
   $('trackingNotice').textContent=trackingNotice;$('trackingNotice').classList.toggle('hidden',!trackingNotice);
-  $('trackingSummary').textContent=h.radio_test_enabled?'Radio connection test active. Live satellite tracking is stopped.':h.enabled?(target?`Tracking ${target.name} · highest current elevation · ${visible.length} above the horizon`:'Tracking is enabled. Waiting for a satellite above the tracking limit.'):notificationOnly?'Notification-only mode. Enable devices in Settings if you want this app to control equipment.':'Live adjustments are off. Start live tracking to control your configured equipment.';
-  $('liveTarget').innerHTML=target?liveDetails(target):'<p class="subtle">No watched satellite is currently above the tracking limit.</p>';
+  $('trackingSummary').textContent=notificationOnly?'Live positions · highest current satellite above the horizon.':deviceFeature('radio') && h.radio_test_enabled?'Radio connection test active. Live satellite tracking is stopped.':h.enabled?(target?`Tracking ${target.name} · highest current elevation · ${visible.length} above the horizon`:'Tracking is enabled. Waiting for a satellite above the tracking limit.'):'Live adjustments are off. Start live tracking to control your configured equipment.';
+  $('liveTarget').innerHTML=target?liveDetails(target):`<p class="subtle">No watched satellite is currently above ${notificationOnly?'the horizon':'the tracking limit'}.</p>`;
   renderPassNudges(target);
   const pos=h.rotator_position,command=h.commanded_position;
   $('equipmentStatus').classList.toggle('hidden',notificationOnly);
-  $('equipmentStatus').innerHTML=`<div class="equipment-grid">${state.settings.rotator_enabled?`<div><strong>Rotator · ${esc(h.rotator_status)}</strong><p>Reported: ${pos?`az ${pos.azimuth}° · el ${pos.elevation}°`:'—'}</p><p>Last command: ${command?`az ${command.azimuth}° · el ${command.elevation}°`:'—'}</p></div>`:''}${state.settings.radio_enabled?`<div><strong>Radio · ${esc(h.radio_status)}</strong><p>Last verified RX: ${mhz(h.radio_rx_hz)}</p><p>Last verified TX: ${mhz(h.radio_tx_hz)}</p><p>${h.radio_verified_at?`Last radio readback: ${formatTime(h.radio_verified_at,true,true)} · ${esc(h.radio_verified_target)}`:'No radio readback yet.'}</p><p>Pass frequency updates: ${h.frequency_updates || 0}</p></div>`:''}</div>${state.settings.rotator_enabled && h.rotator_error?`<p class="equipment-error">Rotator: ${esc(h.rotator_error)}${h.enabled && state.settings.radio_enabled?' Radio control remains enabled.':''}</p>`:''}${!notificationOnly && h.error?`<p class="equipment-error">${esc(h.error)}</p>`:''}`;
+  $('equipmentStatus').innerHTML=`<div class="equipment-grid">${deviceFeature('rotator')?`<div><strong>Rotator · ${esc(h.rotator_status)}</strong><p>Reported: ${pos?`az ${pos.azimuth}° · el ${pos.elevation}°`:'—'}</p><p>Last command: ${command?`az ${command.azimuth}° · el ${command.elevation}°`:'—'}</p></div>`:''}${deviceFeature('radio')?`<div><strong>Radio · ${esc(h.radio_status)}</strong><p>Last verified RX: ${mhz(h.radio_rx_hz)}</p><p>Last verified TX: ${mhz(h.radio_tx_hz)}</p><p>${h.radio_verified_at?`Last radio readback: ${formatTime(h.radio_verified_at,true,true)} · ${esc(h.radio_verified_target)}`:'No radio readback yet.'}</p><p>Pass frequency updates: ${h.frequency_updates || 0}</p></div>`:''}</div>${deviceFeature('rotator') && h.rotator_error?`<p class="equipment-error">Rotator: ${esc(h.rotator_error)}${h.enabled && deviceFeature('radio')?' Radio control remains enabled.':''}</p>`:''}${!notificationOnly && h.error?`<p class="equipment-error">${esc(h.error)}</p>`:''}`;
   $('expandedSummary').textContent=`${visible.length} watched satellite${visible.length===1?'':'s'} above the horizon${visible.length?` · highest: ${visible[0].name} at ${visible[0].elevation.toFixed(1)}°`:''}`;
   $('expandedSatellites').innerHTML=visible.length?visible.map((row,i)=>`<article class="expanded-satellite ${i===0?'highest':''}">${liveDetails(row)}</article>`).join(''):'<p>No watched satellite is currently above the horizon. The sky continues to update.</p>';
 }
 function renderRotatorTest(result) {
-  const visible=Boolean(state.settings.rotator_enabled && result);
+  const visible=Boolean(deviceFeature('rotator') && result);
   $('rotatorTestResult').classList.toggle('hidden',!visible);
   if(!visible)return;
   $('rotatorTestResult').classList.toggle('test-warning',result.status==='warning');
@@ -410,7 +443,7 @@ function renderRotatorTest(result) {
   $('rotatorTestResponse').textContent=`Response to C2:\n${response}`;
 }
 function renderRadioTest(result) {
-  const visible=Boolean(state.settings.radio_enabled && !state.hardware.radio_test_enabled && result && result.status!=='running');
+  const visible=Boolean(deviceFeature('radio') && !state.hardware.radio_test_enabled && result && result.status!=='running');
   $('radioTestResult').classList.toggle('hidden',!visible);
   if(!visible)return;
   $('radioTestResult').classList.toggle('test-warning',result.status==='warning');
@@ -422,6 +455,7 @@ function renderRadioTest(result) {
   $('radioTestMessage').textContent=result.message;
 }
 async function refreshPorts(useSaved=false) {
+  if(!deviceFeature('equipment'))return;
   try {
     const response=await fetch('/api/ports',{cache:'no-store'});if(!response.ok)throw new Error('Cannot list serial ports.');
     const result=await response.json();serialPorts=result.ports;
@@ -437,7 +471,7 @@ async function refreshPorts(useSaved=false) {
 }
 function renderProfiles() {
   if(!state)return;
-  $('profileList').innerHTML=state.settings.satellites.map(name=>{const p=state.settings.satellite_profiles[name];return `<article class="profile-row"><strong>${esc(name)}</strong><label class="checkbox"><input type="checkbox" data-pause-satellite="${esc(name)}" aria-label="Pause notifications for ${esc(name)}" ${satelliteNotificationsPaused(name)?'checked':''}> Pause notifications for this satellite until you uncheck this</label><p>RX ${p.downlink_mhz==null?'unset':p.downlink_mhz.toFixed(6)+' MHz'} · ${esc(p.downlink_mode)}<br>TX ${p.uplink_mhz==null?'receive only':p.uplink_mhz.toFixed(6)+' MHz'} · ${esc(p.uplink_mode)}</p><p>${esc(p.notes)}</p><div class="profile-actions"><button type="button" class="button" data-edit="${esc(name)}">Edit ${esc(name)}</button><button type="button" class="text-button" data-delete="${esc(name)}">Remove ${esc(name)}</button></div></article>`;}).join('');
+  $('profileList').innerHTML=state.settings.satellites.map(name=>{const p=state.settings.satellite_profiles[name];return `<article class="profile-row"><strong>${esc(name)}</strong><label class="checkbox"><input type="checkbox" data-pause-satellite="${esc(name)}" aria-label="Pause notifications for ${esc(name)}" ${satelliteNotificationsPaused(name)?'checked':''}> Pause notifications for this satellite until you uncheck this</label>${deviceFeature('radio')?`<p>RX ${p.downlink_mhz==null?'unset':p.downlink_mhz.toFixed(6)+' MHz'} · ${esc(p.downlink_mode)}<br>TX ${p.uplink_mhz==null?'receive only':p.uplink_mhz.toFixed(6)+' MHz'} · ${esc(p.uplink_mode)}</p><p>${esc(p.notes)}</p>`:''}<div class="profile-actions"><button type="button" class="button" data-edit="${esc(name)}">Edit ${esc(name)}</button><button type="button" class="text-button" data-delete="${esc(name)}">Remove ${esc(name)}</button></div></article>`;}).join('');
   $('profileList').querySelectorAll('[data-pause-satellite]').forEach(checkbox=>checkbox.addEventListener('change',async()=>{
     const name=checkbox.dataset.pauseSatellite,paused=checkbox.checked;checkbox.disabled=true;
     await setSatellitePaused(name,paused,checkbox);
@@ -496,12 +530,12 @@ function applyLookupProfile(match) {
 }
 async function lookupSatelliteProfile(force=false) {
   clearTimeout(profileLookupTimer);
-  if(!profileEditorOpen || editingSatellite)return;
+  if(!deviceFeature('radio') || !profileEditorOpen || editingSatellite)return;
   const name=$('profileName').value.trim().toUpperCase();
   if(!name || (!force && lastLookupName===name))return;
   lastLookupName=name;const generation=++profileLookupGeneration;
   $('profileLookupStatus').textContent='Looking up frequencies and modes…';$('profileLookupChoices').classList.add('hidden');
-  const current=()=>profileEditorOpen && !editingSatellite && generation===profileLookupGeneration && $('profileName').value.trim().toUpperCase()===name;
+  const current=()=>deviceFeature('radio') && profileEditorOpen && !editingSatellite && generation===profileLookupGeneration && $('profileName').value.trim().toUpperCase()===name;
   try{
     const result=await post('/api/profile-lookup',{name});if(!current())return;
     profileMatches=result.matches||[];$('profileLookupStatus').textContent=result.message;
@@ -526,10 +560,11 @@ $('saveSatellite').addEventListener('click',async()=>{
   if(name!==editingSatellite && state.settings.satellites.includes(name)){$('profileError').textContent='That satellite is already in your watch list.';return;}
   const names=editingSatellite?state.settings.satellites.map(n=>n===editingSatellite?name:n):[...state.settings.satellites,name];
   const profiles={...state.settings.satellite_profiles};if(editingSatellite)delete profiles[editingSatellite];
-  const p={downlink_mhz:$('profileRx').value===''?null:Number($('profileRx').value),uplink_mhz:$('profileTx').value===''?null:Number($('profileTx').value),downlink_mode:$('profileRxMode').value,uplink_mode:$('profileTxMode').value,notes:$('profileNotes').value,source:profileSource};profiles[name]=p;
+  const p=deviceFeature('radio')?{downlink_mhz:$('profileRx').value===''?null:Number($('profileRx').value),uplink_mhz:$('profileTx').value===''?null:Number($('profileTx').value),downlink_mode:$('profileRxMode').value,uplink_mode:$('profileTxMode').value,notes:$('profileNotes').value,source:profileSource}:editingSatellite?{...state.settings.satellite_profiles[editingSatellite]}:null;
+  if(p)profiles[name]=p;
   const notifications={...state.settings.satellite_notifications_paused};if(editingSatellite)delete notifications[editingSatellite];notifications[name]=$('profilePause').checked;
   profileLookupGeneration++;clearTimeout(profileLookupTimer);
-  try{await post('/api/settings',{satellites:names,satellite_profiles:profiles,satellite_notifications_paused:notifications});await refreshState();renderProfiles();profileEditorOpen=false;$('profileEditor').classList.add('hidden');toast(`${name} saved. Live tracking is off.`);}catch(error){$('profileError').textContent=error.message;}
+  try{await post('/api/settings',{satellites:names,satellite_profiles:profiles,satellite_notifications_paused:notifications});await refreshState();renderProfiles();profileEditorOpen=false;$('profileEditor').classList.add('hidden');toast(`${name} saved.${deviceFeature('equipment')?' Live tracking is off.':''}`);}catch(error){$('profileError').textContent=error.message;}
 });
 $('scanPorts').addEventListener('click',()=>refreshPorts());
 $('trackingToggle').addEventListener('click',async()=>{
@@ -599,7 +634,7 @@ $('settingsForm').addEventListener('submit',async event=>{
   event.preventDefault();const form=event.currentTarget,data={};
   if(profileEditorOpen){toast('Save or cancel the satellite edit before saving other settings.');return;}
   for(const [key] of Object.entries(state.settings)) {
-    const field=form.elements.namedItem(key);if(!field)continue;
+    const field=form.elements.namedItem(key);if(!field || field.disabled)continue;
     data[key]=field.type==='checkbox'?field.checked:field.type==='number'||['rotator_baud','radio_baud','rotator_max_azimuth'].includes(key)?Number(field.value):field.value;
   }
   const recalculate=Object.keys(data).some(key=>!['earth_overlay','windows_maximum_volume','windows_volume_percent','auto_acknowledge_enabled','auto_acknowledge_seconds','repeat_sound_seconds','automatic_pause_enabled','automatic_pause_start','automatic_pause_hours','rotator_enabled','rotator_port','rotator_baud','rotator_max_azimuth','radio_enabled','radio_port','radio_baud','radio_address','radio_step_hz','tracking_minimum_mode'].includes(key) && JSON.stringify(data[key])!==JSON.stringify(state.settings[key]));

@@ -63,6 +63,7 @@ async function dashboard(t, changes={}) {
       const equipmentKeys=['satellites','satellite_profiles','latitude','longitude','observer_height_m','minimum_elevation','rotator_enabled','rotator_port','rotator_baud','rotator_max_azimuth','radio_enabled','radio_port','radio_baud','radio_address','radio_step_hz','tracking_minimum_mode'];
       const equipmentChanged=Object.keys(body).some(key=>equipmentKeys.includes(key) && JSON.stringify(body[key])!==JSON.stringify(server.settings[key]));
       server.settings={...server.settings,...body};server.settings.satellite_notifications_paused=Object.fromEntries(server.settings.satellites.map(name=>[name,Boolean(pauses[name])]));
+      server.settings.satellite_profiles=Object.fromEntries(server.settings.satellites.map(name=>[name,server.settings.satellite_profiles[name] || settings.satellite_profiles[name] || {downlink_mhz:null,uplink_mhz:null,downlink_mode:'USB',uplink_mode:'LSB',notes:'',source:''}]));
       for(const name of changedNotifications){
         if(pauses[name]){
           for(const alert of server.alerts)if(alert.name===name && !alert.test && !alert.acknowledged)Object.assign(alert,{acknowledged:true,active:false,acknowledgement_source:'satellite_pause'});
@@ -772,7 +773,7 @@ test('calculated pass frequencies are labelled and a CI-V failure is prominent w
     radio_verified_at:server.now,radio_verified_target:'ISS',frequency_updates:4});await refresh();
   assert.ok($('trackingNotice').classList.contains('hidden'));assert.match($('equipmentStatus').textContent,/Last radio readback:.*ISS/);
   assert.match($('equipmentStatus').textContent,/Pass frequency updates: 4/);
-  server.settings.radio_enabled=false;await refresh();assert.match($('trackingNotice').textContent,/Radio adjustments are disabled/);
+  server.settings.radio_enabled=false;await refresh();assert.doesNotMatch($('trackingNotice').textContent,/radio|RX|TX/i);
 });
 
 test('maximum Windows volume is enabled by default and can be disabled without acknowledging an alert',async t=>{
@@ -794,7 +795,7 @@ test('fresh defaults select five-minute alarms, 60-second repeats, 75 percent vo
   assert.equal(fields.repeat_sound_seconds.value,'60');assert.equal(fields.observer_height_m.value,'100');
   assert.equal(fields.tracking_minimum_mode.value,'horizon');
   assert.equal(fields.rotator_enabled.checked,false);assert.equal(fields.radio_enabled.checked,false);
-  assert.equal($('trackingToggle').disabled,true);assert.match($('trackingNotice').textContent,/Notification-only mode/);
+  assert.equal($('trackingToggle').disabled,true);assert.equal($('trackingNotice').textContent,'');assert.equal($('trackingNotice').hidden,true);
   assert.ok($('radioTestToggle').classList.contains('hidden'));assert.ok($('rotatorTest').classList.contains('hidden'));
   assert.match($('fleet').textContent,/ISS/);assert.match($('liveTarget').textContent,/ISS/);
 });
@@ -811,6 +812,102 @@ test('home connection-test buttons independently follow saved radio and rotator 
   }
   server.volume_status='Previous PC volume 20% and muted state restored.';await refresh();
   assert.match($('soundStatus').textContent,/Previous PC volume 20% and muted state restored/);
+});
+
+function visibleText(root,ignore=null){
+  const walker=root.ownerDocument.createTreeWalker(root,4),parts=[];let node;
+  while((node=walker.nextNode()))if(!node.parentElement.closest('[hidden],.hidden') && !(ignore && node.parentElement.closest(ignore)))parts.push(node.textContent);
+  return parts.join(' ').replace(/\s+/g,' ');
+}
+
+test('all four device combinations hide every disabled settings label, dashboard control, Earth detail and help section',async t=>{
+  const {$,w,server,refresh}=await dashboard(t);
+  for(const [radio,rotator] of [[false,false],[true,false],[false,true],[true,true]]){
+    Object.assign(server.settings,{radio_enabled:radio,rotator_enabled:rotator});await refresh();
+    w.document.querySelector('[data-view="settings"]').click();
+    assert.equal($('deviceControlsSettings').nextElementSibling.className,'settings-actions');
+    assert.equal($('deviceControlsSettings').querySelectorAll('input[type="checkbox"]').length,2);
+    for(const element of w.document.querySelectorAll('[data-feature]')){
+      const enabled=element.dataset.feature==='radio'?radio:element.dataset.feature==='rotator'?rotator:radio||rotator;
+      assert.equal(element.hidden,!enabled,`${radio}/${rotator}: ${element.id || element.textContent.slice(0,40)}`);
+    }
+    assert.equal($('settingsForm').elements.radio_baud.disabled,!radio);
+    assert.equal($('settingsForm').elements.rotator_baud.disabled,!rotator);
+    const settingsText=visibleText($('view-settings'),'#deviceControlsSettings');
+    if(!radio)assert.doesNotMatch(settingsText,/\bradio\b|\bRX\b|\bTX\b|CI-V|Doppler|frequenc|receive mode|transmit mode/i);
+    if(!rotator)assert.doesNotMatch(settingsText,/rotator|GS-232|Yaesu/i);
+    $('profileList').querySelector('[data-edit="ISS"]').click();
+    assert.equal($('profileRadioFields').hidden,!radio);
+    assert.equal($('profileName').hasAttribute('aria-describedby'),radio);
+    $('cancelSatellite').click();
+    w.document.querySelector('[data-view="dashboard"]').click();
+    const dashboardText=visibleText($('view-dashboard'));
+    if(!radio)assert.doesNotMatch(dashboardText,/\bradio\b|\bRX\b|\bTX\b|Doppler|frequenc/i);
+    if(!rotator)assert.doesNotMatch(dashboardText,/rotator|GS-232|Yaesu/i);
+    if(!radio && !rotator)assert.equal($('livePanelTitle').textContent,'Live satellite');
+    assert.match($('liveTarget').textContent,/ISS/);assert.match($('liveTarget').textContent,/Satellite azimuth/);
+    $('expandSky').click();
+    if(!radio)assert.doesNotMatch(visibleText($('skyDialog')),/\bRX\b|\bTX\b|Doppler|frequenc/i);
+    $('closeSky').click();
+    w.document.querySelector('[data-view="help"]').click();
+    if(!radio)assert.doesNotMatch(visibleText($('view-help')),/\bradio\b|CI-V|\bRX\b|\bTX\b|Doppler|frequenc/i);
+    if(!rotator)assert.doesNotMatch(visibleText($('view-help')),/rotator|GS-232|Yaesu/i);
+  }
+});
+
+test('bottom checkboxes save immediately, stop running control, retain configuration and preserve other unsaved settings',async t=>{
+  const {$,w,server,requests}=await dashboard(t),fields=$('settingsForm').elements;
+  const saved=clone(server.settings);server.hardware.enabled=true;
+  fields.latitude.value='52.123';
+  for(const key of ['radio_enabled','rotator_enabled']){
+    fields[key].checked=false;fields[key].dispatchEvent(new w.Event('change'));await flush();
+    assert.equal(server.settings[key],false);assert.equal(fields[key].checked,false);
+    assert.deepEqual(requests.filter(row=>row.url==='/api/settings').at(-1).body,{[key]:false});
+  }
+  assert.equal(server.hardware.enabled,false);assert.equal(fields.latitude.value,'52.123');
+  assert.equal(server.settings.latitude,saved.latitude);
+  assert.deepEqual(server.settings.satellite_profiles,saved.satellite_profiles);
+  assert.equal(server.settings.radio_baud,saved.radio_baud);assert.equal(server.settings.rotator_port,saved.rotator_port);
+  const portRequests=requests.filter(row=>row.url==='/api/ports').length;
+  w.document.querySelector('[data-view="settings"]').click();await flush();
+  assert.equal(requests.filter(row=>row.url==='/api/ports').length,portRequests);
+  fields.radio_enabled.checked=true;fields.radio_enabled.dispatchEvent(new w.Event('change'));await flush();
+  assert.equal(server.settings.radio_enabled,true);assert.equal($('radioSettings').hidden,false);assert.equal($('equipmentSettings').hidden,true);
+  assert.equal(server.hardware.enabled,false);assert.deepEqual(server.settings.satellite_profiles,saved.satellite_profiles);
+});
+
+test('disabled radio allows satellite CRUD without frequency lookup or loss of saved frequencies',async t=>{
+  const {$,w,server,requests,refresh}=await dashboard(t);
+  server.settings.radio_enabled=false;server.settings.rotator_enabled=false;await refresh();
+  const original=clone(server.settings.satellite_profiles.ISS);
+  $('profileList').querySelector('[data-edit="ISS"]').click();$('profileName').value='ISS-RENAMED';$('saveSatellite').click();await flush();
+  assert.deepEqual(server.settings.satellite_profiles['ISS-RENAMED'],original);
+  $('addSatellite').click();$('profileName').value='12345';$('profileName').dispatchEvent(new w.Event('change'));await flush();
+  assert.equal(requests.filter(row=>row.url==='/api/profile-lookup').length,0);
+  $('saveSatellite').click();await flush();assert.ok(server.settings.satellites.includes('12345'));
+  assert.equal(server.settings.satellite_notifications_paused['12345'],false);
+  assert.equal($('profileError').textContent,'');
+  server.settings.radio_enabled=true;await refresh();
+  assert.deepEqual(server.settings.satellite_profiles['ISS-RENAMED'],original);
+  assert.match($('profileList').textContent,/437\.800000 MHz/);
+});
+
+test('a rejected device toggle restores the saved checkbox and visible interface',async t=>{
+  const {$,w,server}=await dashboard(t),field=$('settingsForm').elements.radio_enabled;
+  const originalFetch=w.fetch;
+  w.fetch=async(url,options)=>url==='/api/settings'?{ok:false,json:async()=>({error:'Could not save this device choice.'})}:originalFetch(url,options);
+  field.checked=false;field.dispatchEvent(new w.Event('change'));await flush();
+  assert.equal(server.settings.radio_enabled,true);assert.equal(field.checked,true);assert.equal(field.disabled,false);
+  assert.equal($('radioSettings').hidden,false);assert.equal($('passFrequencyControls').hidden,false);
+  assert.match($('deviceFeaturesStatus').textContent,/Could not save/);
+});
+
+test('radio-only Configure equipment opens the visible radio panel instead of hidden rotator settings',async t=>{
+  const {$,w,server,refresh,scrolled}=await dashboard(t);
+  server.settings.rotator_enabled=false;await refresh();
+  $('configureEquipment').click();
+  assert.equal(scrolled.at(-1).id,'radioSettings');assert.equal(w.document.activeElement.id,'radioSettings');
+  assert.equal($('radioSettings').hidden,false);assert.equal($('equipmentSettings').hidden,true);
 });
 
 test('both satellite pause checkboxes use the requested wording',async t=>{
