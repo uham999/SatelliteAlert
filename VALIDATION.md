@@ -1,5 +1,19 @@
 # Verification record
 
+## CI portability of pass-offset tests — 31 October 2026
+
+GitHub run `41195523819` failed on both Python versions because the pass-offset
+test compared the saved settings file with normalized in-memory settings.
+Startup only rewrites that file when serial defaults change. A local COM3
+interface caused a rewrite and masked the incorrect assertion; the GitHub
+runner had no COM ports. Simulating no ports reproduced the same failure locally.
+
+The test now compares the file's bytes before and after nudging, separately
+checks unchanged in-memory settings, and mocks serial enumeration for consistent
+fixtures. A regression case also covers startup filling COM3. **All 223 offline
+Python tests passed locally on Python 3.12.14** with these changes. Application
+settings, frequency calculation and hardware behaviour are unchanged.
+
 ## Hide disabled radio and rotator interfaces — 31 October 2026
 
 The two existing device-enable preferences now appear together at the bottom of

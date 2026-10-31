@@ -1,10 +1,10 @@
 """Pass-only frequency nudges using real orbit fixtures and simulated CI-V."""
 from copy import deepcopy
 from datetime import timedelta, timezone
-import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from orbits import DEFAULT_SETTINGS, OrbitCalculator, parse_tles
 from profiles import doppler
@@ -16,6 +16,11 @@ FIXTURE = (Path(__file__).parent / "fixtures/iss.tle").read_text()
 
 class PassFrequencyTests(unittest.TestCase):
     def setUp(self):
+        # CI has no COM ports. Never let the host PC's connected interfaces
+        # determine whether startup rewrites the fixture's settings file.
+        ports = patch("satellite_alert.available_ports", return_value=[])
+        ports.start()
+        self.addCleanup(ports.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         records, _ = parse_tles(FIXTURE)
@@ -45,6 +50,7 @@ class PassFrequencyTests(unittest.TestCase):
 
     def test_offsets_are_independent_and_applied_before_doppler_not_after(self):
         before = deepcopy(self.monitor.settings)
+        saved_before = (self.root / "settings.json").read_bytes()
         self.nudge("rx", 1000)
         self.nudge("rx", 100)
         self.nudge("tx", -1000)
@@ -59,7 +65,7 @@ class PassFrequencyTests(unittest.TestCase):
         self.assertEqual(f["rx_hz"], round(437_801_100 * (1 - fraction)))
         self.assertEqual(f["tx_hz"], round(145_988_900 * (1 + fraction)))
         self.assertEqual(self.monitor.settings, before)
-        self.assertEqual(json.loads((self.root / "settings.json").read_text()), before)
+        self.assertEqual((self.root / "settings.json").read_bytes(), saved_before)
         # Large offsets/range rates distinguish pre-correction rounding from
         # simply adding an offset to the already corrected frequency.
         profile = before["satellite_profiles"]["ISS"]
@@ -67,6 +73,20 @@ class PassFrequencyTests(unittest.TestCase):
         plain = doppler(profile, 7)
         self.assertNotEqual(corrected["rx_hz"], plain["rx_hz"] + 100_000)
         self.assertNotEqual(corrected["tx_hz"], plain["tx_hz"] - 100_000)
+
+    def test_nudges_leave_saved_settings_unchanged_after_startup_fills_com3(self):
+        self.monitor.close()
+        with patch("satellite_alert.available_ports", return_value=[{"device": "COM3"}]):
+            self.monitor = self.load()
+        self.assertEqual(self.monitor.settings["rotator_port"], "COM3")
+        self.monitor._rebuild()
+        self.monitor.tick()
+        saved_before = (self.root / "settings.json").read_bytes()
+        before = deepcopy(self.monitor.settings)
+        self.nudge("rx", 100)
+        self.nudge("tx", -100)
+        self.assertEqual((self.root / "settings.json").read_bytes(), saved_before)
+        self.assertEqual(self.monitor.settings, before)
 
     def test_every_new_pass_starts_at_zero_even_after_a_gap_without_ticks(self):
         previous = self.target()
